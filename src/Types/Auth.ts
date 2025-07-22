@@ -74,7 +74,11 @@ export type SignalDataTypeMap = {
 	'app-state-sync-version': LTHashState
 }
 
-export type SignalDataSet = { [T in keyof SignalDataTypeMap]?: { [id: string]: SignalDataTypeMap[T] | null } }
+export type SignalDataSet = {
+	[T in keyof SignalDataTypeMap]?: { [id: string]: SignalDataTypeMap[T] | null }
+} & {
+	[key: string]: { [id: string]: any | null } | undefined
+}
 
 type Awaitable<T> = T | Promise<T>
 
@@ -88,6 +92,11 @@ export type SignalKeyStore = {
 export type SignalKeyStoreWithTransaction = SignalKeyStore & {
 	isInTransaction: () => boolean
 	transaction<T>(exec: () => Promise<T>): Promise<T>
+	queueGroupMessage?: (
+		senderKeyName: string,
+		messageBytes: Uint8Array,
+		originalCipher: { decrypt: (messageBytes: Uint8Array) => Promise<Uint8Array> }
+	) => Promise<Uint8Array>
 }
 
 export type TransactionCapabilityOptions = {
