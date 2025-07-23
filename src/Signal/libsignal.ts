@@ -1,27 +1,23 @@
 /* @ts-ignore */
 import * as libsignal from 'libsignal'
-import type { SignalAuthState, SignalKeyStoreWithTransaction } from '../Types'
+import type { SignalAuthState } from '../Types'
 import type { SignalRepository } from '../Types/Signal'
 import { generateSignalPubKey } from '../Utils'
 import { jidDecode } from '../WABinary'
-import type { SenderKeyStoreWithQueue } from './Group/group_cipher'
+import type { SenderKeyStore } from './Group/group_cipher'
 import { SenderKeyName } from './Group/sender-key-name'
 import { SenderKeyRecord } from './Group/sender-key-record'
 import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from './Group'
 
 export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository {
-	const storage: SenderKeyStoreWithQueue = signalStorage(auth)
+	const storage: SenderKeyStore = signalStorage(auth)
 	return {
 		decryptGroupMessage({ group, authorJid, msg }) {
 			const senderName = jidToSignalSenderKeyName(group, authorJid)
 			const cipher = new GroupCipher(storage, senderName)
 
-			// Use transaction to ensure atomicity
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-				return cipher.decrypt(msg)
-			})
+			return cipher.decrypt(msg)
 		},
-
 		async processSenderKeyDistributionMessage({ item, authorJid }) {
 			const builder = new GroupSessionBuilder(storage)
 			if (!item.groupId) {
@@ -38,76 +34,60 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				item.axolotlSenderKeyDistributionMessage
 			)
 			const senderNameStr = senderName.toString()
+			const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
+			if (!senderKey) {
+				await storage.storeSenderKey(senderName, new SenderKeyRecord())
+			}
 
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-				const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
-				if (!senderKey) {
-					await storage.storeSenderKey(senderName, new SenderKeyRecord())
-				}
-
-				await builder.process(senderName, senderMsg)
-			})
+			await builder.process(senderName, senderMsg)
 		},
 		async decryptMessage({ jid, type, ciphertext }) {
 			const addr = jidToSignalProtocolAddress(jid)
 			const session = new libsignal.SessionCipher(storage, addr)
+			let result: Buffer
+			switch (type) {
+				case 'pkmsg':
+					result = await session.decryptPreKeyWhisperMessage(ciphertext)
+					break
+				case 'msg':
+					result = await session.decryptWhisperMessage(ciphertext)
+					break
+				default:
+					throw new Error(`Unknown message type: ${type}`)
+			}
 
-			// Use transaction to ensure atomicityAdd commentMore actions
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-				let result: Buffer
-				switch (type) {
-					case 'pkmsg':
-						result = await session.decryptPreKeyWhisperMessage(ciphertext)
-						break
-					case 'msg':
-						result = await session.decryptWhisperMessage(ciphertext)
-						break
-				}
-
-				return result
-			})
+			return result
 		},
 		async encryptMessage({ jid, data }) {
 			const addr = jidToSignalProtocolAddress(jid)
 			const cipher = new libsignal.SessionCipher(storage, addr)
 
-			// Use transaction to ensure atomicityAdd commentMore actions
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-				const { type: sigType, body } = await cipher.encrypt(data)
-				const type = sigType === 3 ? 'pkmsg' : 'msg'
-				return { type, ciphertext: Buffer.from(body, 'binary') }
-			})
+			const { type: sigType, body } = await cipher.encrypt(data)
+			const type = sigType === 3 ? 'pkmsg' : 'msg'
+			return { type, ciphertext: Buffer.from(body, 'binary') }
 		},
 		async encryptGroupMessage({ group, meId, data }) {
 			const senderName = jidToSignalSenderKeyName(group, meId)
 			const builder = new GroupSessionBuilder(storage)
 
 			const senderNameStr = senderName.toString()
+			const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
+			if (!senderKey) {
+				await storage.storeSenderKey(senderName, new SenderKeyRecord())
+			}
 
-			// Use transaction to ensure atomicity
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-				const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
-				if (!senderKey) {
-					await storage.storeSenderKey(senderName, new SenderKeyRecord())
-				}
+			const senderKeyDistributionMessage = await builder.create(senderName)
+			const session = new GroupCipher(storage, senderName)
+			const ciphertext = await session.encrypt(data)
 
-				const senderKeyDistributionMessage = await builder.create(senderName)
-				const session = new GroupCipher(storage, senderName)
-				const ciphertext = await session.encrypt(data)
-
-				return {
-					ciphertext,
-					senderKeyDistributionMessage: senderKeyDistributionMessage.serialize()
-				}
-			})
+			return {
+				ciphertext,
+				senderKeyDistributionMessage: senderKeyDistributionMessage.serialize()
+			}
 		},
 		async injectE2ESession({ jid, session }) {
 			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
-
-			// Use transaction to ensure atomicity
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-				await cipher.initOutgoing(session)
-			})
+			await cipher.initOutgoing(session)
 		},
 		jidToSignalProtocolAddress(jid) {
 			return jidToSignalProtocolAddress(jid).toString()
@@ -124,7 +104,7 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
 	return new SenderKeyName(group, jidToSignalProtocolAddress(user))
 }
 
-function signalStorage({ creds, keys }: SignalAuthState): SenderKeyStoreWithQueue & Record<string, unknown> {
+function signalStorage({ creds, keys }: SignalAuthState): SenderKeyStore & Record<string, any> {
 	return {
 		loadSession: async (id: string) => {
 			const { [id]: sess } = await keys.get('session', [id])
@@ -132,7 +112,8 @@ function signalStorage({ creds, keys }: SignalAuthState): SenderKeyStoreWithQueu
 				return libsignal.SessionRecord.deserialize(sess)
 			}
 		},
-		storeSession: async (id: string, session: libsignal.SessionRecord) => {
+		// TODO: Replace with libsignal.SessionRecord when type exports are added to libsignal
+		storeSession: async (id: string, session: any) => {
 			await keys.set({ session: { [id]: session.serialize() } })
 		},
 		isTrustedIdentity: () => {
@@ -177,7 +158,6 @@ function signalStorage({ creds, keys }: SignalAuthState): SenderKeyStoreWithQueu
 				privKey: Buffer.from(signedIdentityKey.private),
 				pubKey: generateSignalPubKey(signedIdentityKey.public)
 			}
-		},
-		queueGroupMessage: 'queueGroupMessage' in keys ? keys.queueGroupMessage : undefined
+		}
 	}
 }
