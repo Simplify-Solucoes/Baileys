@@ -59,33 +59,46 @@ export const CurveAsync = {
 }
 
 export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
-	// Create a proper wppconnect identity key pair format for signing
-	const wppIdentityKeyPair = {
-		privKey: new Uint8Array(identityKeyPair.private),
-		pubKey: Buffer.concat([KEY_BUNDLE_TYPE, identityKeyPair.public]) // Add version byte
-	}
+	// Generate the prekey pair first
+	const preKey = KeyHelper.generatePreKey(keyId)
 	
-	// Use wppconnect's proper KeyHelper to generate signed prekey
-	const signedPreKey = KeyHelper.generateSignedPreKey(wppIdentityKeyPair, keyId)
+	// Extract the 32-byte public key (without version byte) that will be sent to WhatsApp
+	const publicKeyToSend = Buffer.from(preKey.keyPair.pubKey.slice(1))
 	
-	// Convert back to our format (32-byte public key without version byte)
+	// Create signature over the SAME 32-byte key that will be sent in eSkeyVal
+	// This ensures signature verification works on WhatsApp server
+	const signature = curve.Ed25519Sign(
+		new Uint8Array(identityKeyPair.private),
+		publicKeyToSend // Sign the 32-byte key that gets sent
+	)
+	
+	// Convert to our KeyPair format
 	const keyPair: KeyPair = {
-		private: Buffer.from(signedPreKey.keyPair.privKey),
-		public: Buffer.from(signedPreKey.keyPair.pubKey.slice(1)) // Remove version byte
+		private: Buffer.from(preKey.keyPair.privKey),
+		public: publicKeyToSend
 	}
 	
-	console.log('signedKeyPair: using wppconnect KeyHelper', {
+	// Verify our signature locally to ensure it's valid
+	const identityPublicWithVersion = Buffer.concat([KEY_BUNDLE_TYPE, identityKeyPair.public])
+	const isValidSig = curve.Ed25519Verify(identityPublicWithVersion, publicKeyToSend, signature)
+	
+	console.log('signedKeyPair: fixed signature/data mismatch', {
 		keyPairPublicLength: keyPair.public.length,
-		signatureLength: signedPreKey.signature.length,
+		signatureLength: signature.length,
+		signatureValid: isValidSig,
 		keyId,
 		publicKeyHex: Buffer.from(keyPair.public).toString('hex').substring(0, 16) + '...',
-		signatureHex: Buffer.from(signedPreKey.signature).toString('hex').substring(0, 16) + '...',
+		signatureHex: Buffer.from(signature).toString('hex').substring(0, 16) + '...',
 		identityKeyHex: Buffer.from(identityKeyPair.public).toString('hex').substring(0, 16) + '...'
 	})
 
+	if (!isValidSig) {
+		throw new Error('Generated signature is invalid - this should not happen')
+	}
+
 	return { 
 		keyPair, 
-		signature: Buffer.from(signedPreKey.signature), 
+		signature: Buffer.from(signature), 
 		keyId 
 	}
 }
