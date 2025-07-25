@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'crypto'
-import { KeyHelper, curve } from '@wppconnect-team/libsignal-protocol'
+import { libsignalSync as libsignal } from './libsignal-compat'
 import { KEY_BUNDLE_TYPE } from '../Defaults'
 import type { KeyPair } from '../Types'
 
@@ -12,82 +12,82 @@ export const generateSignalPubKey = (pubKey: Uint8Array | Buffer) =>
 
 export const Curve = {
 	generateKeyPair: (): KeyPair => {
-		// Use wppconnect's proper KeyHelper to generate identity key pairs
-		const keyPair = KeyHelper.generateIdentityKeyPair()
+		// Use synchronous compatibility wrapper that matches original API exactly
+		const { pubKey, privKey } = libsignal.curve.generateKeyPair()
 		return {
-			private: Buffer.from(keyPair.privKey),
-			public: Buffer.from(keyPair.pubKey.slice(1)) // Remove 0x05 version byte for compatibility
+			private: Buffer.from(privKey),
+			public: Buffer.from(pubKey) // Already 32 bytes from compat wrapper
 		}
 	},
 	sharedKey: (privateKey: Uint8Array, publicKey: Uint8Array) => {
-		// Add version byte for wppconnect compatibility
-		const pubKeyWithVersion = publicKey.length === 32 ? 
-			Buffer.concat([KEY_BUNDLE_TYPE, publicKey]) : publicKey
-		const shared = curve.ECDHE(pubKeyWithVersion, privateKey)
+		// Use compatibility wrapper that matches calculateAgreement behavior
+		const shared = libsignal.curve.calculateAgreement(publicKey, privateKey)
 		return Buffer.from(shared)
 	},
 	sign: (privateKey: Uint8Array, buf: Uint8Array) => {
-		const signature = curve.Ed25519Sign(privateKey, buf)
+		const signature = libsignal.curve.calculateSignature(privateKey, buf)
 		return Buffer.from(signature)
 	},
 	verify: (pubKey: Uint8Array, message: Uint8Array, signature: Uint8Array) => {
 		try {
-			// Add version byte for wppconnect verification
-			const pubKeyWithVersion = pubKey.length === 32 ? 
-				Buffer.concat([KEY_BUNDLE_TYPE, pubKey]) : pubKey
-			return curve.Ed25519Verify(pubKeyWithVersion, message, signature)
+			libsignal.curve.verifySignature(pubKey, message, signature)
+			return true // verifySignature throws on failure, returns void on success
 		} catch (error) {
 			return false
 		}
 	}
 }
 
-// Async versions for backward compatibility (same as sync since wppconnect operations are sync)
+// Async versions for proper async/await usage
 export const CurveAsync = {
 	generateKeyPair: async (): Promise<KeyPair> => {
-		return Curve.generateKeyPair()
+		const { pubKey, privKey } = await libsignal.curve.generateKeyPair()
+		return {
+			private: Buffer.from(privKey),
+			public: Buffer.from(pubKey)
+		}
 	},
 	sharedKey: async (privateKey: Uint8Array, publicKey: Uint8Array): Promise<Buffer> => {
-		return Curve.sharedKey(privateKey, publicKey)
+		const shared = await libsignal.curve.calculateAgreement(publicKey, privateKey)
+		return Buffer.from(shared)
 	},
 	sign: async (privateKey: Uint8Array, buf: Uint8Array): Promise<Buffer> => {
-		return Curve.sign(privateKey, buf)
+		const signature = await libsignal.curve.calculateSignature(privateKey, buf)
+		return Buffer.from(signature)
 	},
 	verify: async (pubKey: Uint8Array, message: Uint8Array, signature: Uint8Array): Promise<boolean> => {
-		return Curve.verify(pubKey, message, signature)
+		try {
+			await libsignal.curve.verifySignature(pubKey, message, signature)
+			return true
+		} catch (error) {
+			return false
+		}
 	}
 }
 
 export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
-	// Create a proper wppconnect identity key pair format for signing
-	const wppIdentityKeyPair = {
-		privKey: new Uint8Array(identityKeyPair.private),
-		pubKey: Buffer.concat([KEY_BUNDLE_TYPE, identityKeyPair.public]) // Add version byte
-	}
+	const preKey = Curve.generateKeyPair()
+	// Sign the raw public key (without version byte) since that's what gets sent to WhatsApp
+	const signature = Curve.sign(identityKeyPair.private, preKey.public)
+
+	// Verify the signature to ensure it's valid
+	const isValidSig = Curve.verify(identityKeyPair.public, preKey.public, signature)
 	
-	// Use wppconnect's proper KeyHelper to generate signed prekey
-	const signedPreKey = KeyHelper.generateSignedPreKey(wppIdentityKeyPair, keyId)
-	
-	// Convert back to our format (32-byte public key without version byte)
-	const keyPair: KeyPair = {
-		private: Buffer.from(signedPreKey.keyPair.privKey),
-		public: Buffer.from(signedPreKey.keyPair.pubKey.slice(1)) // Remove version byte
-	}
-	
-	console.log('signedKeyPair: using wppconnect KeyHelper', {
-		keyPairPublicLength: keyPair.public.length,
-		signatureLength: signedPreKey.signature.length,
+	console.log('signedKeyPair: debug info', {
+		keyPairPublicLength: preKey.public.length,
+		signatureLength: signature.length,
+		signatureValid: isValidSig,
 		keyId,
-		publicKeyHex: Buffer.from(keyPair.public).toString('hex').substring(0, 16) + '...',
-		signatureHex: Buffer.from(signedPreKey.signature).toString('hex').substring(0, 16) + '...',
+		publicKeyHex: Buffer.from(preKey.public).toString('hex').substring(0, 16) + '...',
+		signatureHex: Buffer.from(signature).toString('hex').substring(0, 16) + '...',
 		identityKeyHex: Buffer.from(identityKeyPair.public).toString('hex').substring(0, 16) + '...'
 	})
 
-	return { 
-		keyPair, 
-		signature: Buffer.from(signedPreKey.signature), 
-		keyId 
+	if (!isValidSig) {
+		throw new Error('Generated signature is invalid - this indicates a crypto compatibility issue')
 	}
+
+	return { keyPair: preKey, signature, keyId }
 }
 
 const GCM_TAG_LENGTH = 128 >> 3
