@@ -38,8 +38,6 @@ import {
 	areJidsSameUser,
 	type BinaryNode,
 	type BinaryNodeAttributes,
-	getBinaryFilteredBizBot,
-	getBinaryFilteredButtons,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	isJidGroup,
@@ -461,29 +459,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		await authState.keys.transaction(async () => {
-			let didPushAdditional = false
-			const messages = normalizeMessageContent(message)
-			const buttonType = messages ? getButtonType(messages) : undefined
-			const pollMessage =
-				messages?.pollCreationMessage || messages?.pollCreationMessageV2 || messages?.pollCreationMessageV3
-			const regexGroupOld = /^(\d{1,15})-(\d+)@g\.us$/
-
 			const mediaType = getMediaType(message)
 			if (mediaType) {
 				extraAttrs['mediatype'] = mediaType
-			}
-
-			if (
-				messages?.pinInChatMessage ||
-				messages?.keepInChatMessage ||
-				message.reactionMessage ||
-				message.protocolMessage?.editedMessage
-			) {
-				extraAttrs['decrypt-fail'] = 'hide'
-			}
-
-			if (messages?.interactiveResponseMessage?.nativeFlowResponseMessage) {
-				extraAttrs['native_flow_name'] = messages?.interactiveResponseMessage?.nativeFlowResponseMessage.name || ''
 			}
 
 			if (isNewsletter) {
@@ -602,7 +580,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					content: ciphertext
 				})
 
-
 				await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
 			} else {
 				const { user: meUser } = jidDecode(meId)!
@@ -705,62 +682,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				logger.debug({ jid }, 'adding device identity')
 			}
 
-			if (isGroup && regexGroupOld.test(jid) && !message.reactionMessage) {
-				;(stanza.content as BinaryNode[]).push({
-					tag: 'multicast',
-					attrs: {}
-				})
-			}
-
-			if (pollMessage || messages?.eventMessage) {
-				;(stanza.content as BinaryNode[]).push({
-					tag: 'meta',
-					attrs: messages?.eventMessage
-						? {
-								event_type: 'creation'
-							}
-						: isNewsletter
-							? {
-									polltype: 'creation',
-									contenttype: pollMessage?.pollContentType === 2 ? 'image' : 'text'
-								}
-							: {
-									polltype: 'creation'
-								}
-				})
-			}
-
-			if (!isNewsletter && buttonType && messages) {
-				const buttonsNode = getButtonArgs(messages)
-				const filteredButtons = getBinaryFilteredButtons(additionalNodes ? additionalNodes : [])
-
-				if (filteredButtons) {
-					;(stanza.content as BinaryNode[]).push(...(additionalNodes || []))
-					didPushAdditional = true
-				} else {
-					;(stanza.content as BinaryNode[]).push(buttonsNode)
-				}
-			}
-
-			if (isJidUser(destinationJid)) {
-				const botNode: BinaryNode = {
-					tag: 'bot',
-					attrs: {
-						biz_bot: '1'
-					}
-				}
-
-				const filteredBizBot = getBinaryFilteredBizBot(additionalNodes ? additionalNodes : [])
-
-				if (filteredBizBot) {
-					;(stanza.content as BinaryNode[]).push(...(additionalNodes || []))
-					didPushAdditional = true
-				} else {
-					;(stanza.content as BinaryNode[]).push(botNode)
-				}
-			}
-
-			if (!didPushAdditional && additionalNodes && additionalNodes.length > 0) {
+			if (additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
 			}
 
@@ -773,22 +695,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const getMessageType = (message: proto.IMessage) => {
-		const normalizedMessage = normalizeMessageContent(message)
-		if (
-			normalizedMessage?.pollCreationMessage ||
-			normalizedMessage?.pollCreationMessageV2 ||
-			normalizedMessage?.pollCreationMessageV3
-		) {
+		if (message.pollCreationMessage || message.pollCreationMessageV2 || message.pollCreationMessageV3) {
 			return 'poll'
-		} else if (normalizedMessage?.reactionMessage) {
-			return 'reaction'
-		} else if (normalizedMessage?.eventMessage) {
-			return 'event'
-		} else if (normalizedMessage && getMediaType(normalizedMessage)) {
-			return 'media'
-		} else {
-			return 'text'
 		}
+
+		return 'text'
 	}
 
 	const getMediaType = (message: proto.IMessage) => {
