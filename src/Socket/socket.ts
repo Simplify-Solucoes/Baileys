@@ -266,6 +266,13 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		const payloadEnc = noise.encrypt(proto.ClientPayload.encode(node).finish())
+		
+		logger.info({ 
+			keyEncLength: keyEnc.length,
+			payloadEncLength: payloadEnc.length,
+			nodeType: !creds.me ? 'registration' : 'login'
+		}, 'socket: sending client finish message')
+		
 		await sendRawMessage(
 			proto.HandshakeMessage.encode({
 				clientFinish: {
