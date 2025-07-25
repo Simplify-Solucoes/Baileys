@@ -203,7 +203,8 @@ export const makeNoiseHandler = ({
 			
 			const keyEnc = encrypt(noiseKeyWithVersion)
 			logger.trace({ 
-				keyEncLength: keyEnc.length 
+				keyEncLength: keyEnc.length,
+				keyEncHex: Buffer.from(keyEnc).toString('hex').substring(0, 32) + '...'
 			}, 'noise: client noise key encrypted')
 
 			// Step 8: Final shared secret mixing
