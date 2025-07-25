@@ -16,11 +16,11 @@ export const Curve = {
 		const keyPair = KeyHelper.generateIdentityKeyPair()
 		return {
 			private: Buffer.from(keyPair.privKey),
-			public: Buffer.from(keyPair.pubKey) // Keep full key with version byte for consistent handling
+			public: Buffer.from(keyPair.pubKey.slice(1)) // Remove 0x05 version byte for compatibility
 		}
 	},
 	sharedKey: (privateKey: Uint8Array, publicKey: Uint8Array) => {
-		// Ensure publicKey has version byte for ECDHE
+		// Add version byte for wppconnect compatibility
 		const pubKeyWithVersion = publicKey.length === 32 ? 
 			Buffer.concat([KEY_BUNDLE_TYPE, publicKey]) : publicKey
 		const shared = curve.ECDHE(pubKeyWithVersion, privateKey)
@@ -32,7 +32,7 @@ export const Curve = {
 	},
 	verify: (pubKey: Uint8Array, message: Uint8Array, signature: Uint8Array) => {
 		try {
-			// Ensure pubKey has version byte for verification
+			// Add version byte for wppconnect verification
 			const pubKeyWithVersion = pubKey.length === 32 ? 
 				Buffer.concat([KEY_BUNDLE_TYPE, pubKey]) : pubKey
 			return curve.Ed25519Verify(pubKeyWithVersion, message, signature)
@@ -62,38 +62,53 @@ export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
 	// Generate prekey using the direct approach (like original libsignal)
 	const preKey = Curve.generateKeyPair()
 	
-	// For signing, we need the raw 32-byte public key (without version byte)
-	const preKeyPublicRaw = preKey.public.length === 33 ? preKey.public.slice(1) : preKey.public
-	const identityPublicRaw = identityKeyPair.public.length === 33 ? identityKeyPair.public.slice(1) : identityKeyPair.public
-	
 	// Sign the raw 32-byte public key directly with identity private key
-	const signature = Curve.sign(identityKeyPair.private, preKeyPublicRaw)
+	// This matches the original Signal protocol specification
+	const signature = Curve.sign(identityKeyPair.private, preKey.public)
 	
-	// Verify our signature using the raw public keys
-	const isValidSig = Curve.verify(identityPublicRaw, preKeyPublicRaw, signature)
+	// Verify our signature using the same verification WhatsApp server would use
+	const isValidSig = Curve.verify(identityKeyPair.public, preKey.public, signature)
 	
-	console.log('signedKeyPair: debug info', {
-		keyId,
-		preKeyPublicLength: preKey.public.length,
-		preKeyPublicRawLength: preKeyPublicRaw.length,
-		identityPublicLength: identityKeyPair.public.length,
-		identityPublicRawLength: identityPublicRaw.length,
+	// Test compatibility by comparing with direct wppconnect curve operations
+	const directSignature = curve.Ed25519Sign(
+		new Uint8Array(identityKeyPair.private),
+		new Uint8Array(preKey.public)
+	)
+	
+	const identityWithVersion = Buffer.concat([KEY_BUNDLE_TYPE, identityKeyPair.public])
+	const directVerification = curve.Ed25519Verify(
+		identityWithVersion,
+		new Uint8Array(preKey.public),
+		directSignature
+	)
+	
+	console.log('signedKeyPair: compatibility analysis', {
+		keyPairPublicLength: preKey.public.length,
 		signatureLength: signature.length,
 		signatureValid: isValidSig,
-		preKeyPublicHex: Buffer.from(preKeyPublicRaw).toString('hex').substring(0, 16) + '...',
+		keyId,
+		publicKeyHex: Buffer.from(preKey.public).toString('hex').substring(0, 16) + '...',
 		signatureHex: Buffer.from(signature).toString('hex').substring(0, 16) + '...',
-		identityKeyHex: Buffer.from(identityPublicRaw).toString('hex').substring(0, 16) + '...'
+		identityKeyHex: Buffer.from(identityKeyPair.public).toString('hex').substring(0, 16) + '...',
+		// Compatibility testing
+		directSignatureHex: Buffer.from(directSignature).toString('hex').substring(0, 16) + '...',
+		directVerification,
+		signaturesMatch: Buffer.compare(Buffer.from(signature), Buffer.from(directSignature)) === 0,
+		verificationTest: 'Testing compatibility between wrapper and direct calls'
 	})
+	
+	// If signatures don't match, there's a fundamental compatibility issue
+	if (Buffer.compare(Buffer.from(signature), Buffer.from(directSignature)) !== 0) {
+		console.error('CRITICAL: Signature mismatch between Curve wrapper and direct curve calls!')
+		console.error('This indicates a fundamental compatibility issue with the libsignal migration.')
+	}
 
 	if (!isValidSig) {
 		throw new Error('Generated signature is invalid - signature verification failed')
 	}
 
 	return { 
-		keyPair: { 
-			private: preKey.private, 
-			public: preKeyPublicRaw // Return raw 32-byte public key for WhatsApp compatibility
-		}, 
+		keyPair: preKey, 
 		signature: Buffer.from(signature), 
 		keyId 
 	}

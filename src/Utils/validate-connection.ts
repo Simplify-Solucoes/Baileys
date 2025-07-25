@@ -91,17 +91,14 @@ export const generateRegistrationNode = (
 
 	const companionProto = proto.DeviceProps.encode(companion).finish()
 
-	// Ensure we use raw 32-byte keys for WhatsApp registration
-	const identityKeyRaw = signedIdentityKey.public.length === 33 ? signedIdentityKey.public.slice(1) : signedIdentityKey.public
-	
 	// Debug logging for registration data
 	console.log('generateRegistrationNode: debug info', {
 		registrationId,
 		signedPreKeyId: signedPreKey.keyId,
-		signedIdentityKeyLength: identityKeyRaw.length,
+		signedIdentityKeyLength: signedIdentityKey.public.length,
 		signedPreKeyPublicLength: signedPreKey.keyPair.public.length,
 		signedPreKeySignatureLength: signedPreKey.signature.length,
-		signedIdentityKeyHex: Buffer.from(identityKeyRaw).toString('hex').substring(0, 16) + '...',
+		signedIdentityKeyHex: Buffer.from(signedIdentityKey.public).toString('hex').substring(0, 16) + '...',
 		signedPreKeyPublicHex: Buffer.from(signedPreKey.keyPair.public).toString('hex').substring(0, 16) + '...',
 		signedPreKeySignatureHex: Buffer.from(signedPreKey.signature).toString('hex').substring(0, 16) + '...'
 	})
@@ -115,7 +112,7 @@ export const generateRegistrationNode = (
 			deviceProps: companionProto,
 			eRegid: encodeBigEndian(registrationId),
 			eKeytype: KEY_BUNDLE_TYPE,
-			eIdent: identityKeyRaw,
+			eIdent: signedIdentityKey.public,
 			eSkeyId: encodeBigEndian(signedPreKey.keyId, 3),
 			eSkeyVal: signedPreKey.keyPair.public,
 			eSkeySig: signedPreKey.signature
