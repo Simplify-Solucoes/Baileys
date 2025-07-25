@@ -1,5 +1,4 @@
-/* @ts-ignore */
-import { calculateMAC } from 'libsignal/src/crypto'
+import { crypto } from '@wppconnect-team/libsignal-protocol'
 import { SenderMessageKey } from './sender-message-key'
 
 export class SenderChainKey {
@@ -34,6 +33,6 @@ export class SenderChainKey {
 	}
 
 	private getDerivative(seed: Uint8Array, key: Buffer): Uint8Array {
-		return calculateMAC(key, seed)
+		return crypto.calculateMAC(key, seed)
 	}
 }

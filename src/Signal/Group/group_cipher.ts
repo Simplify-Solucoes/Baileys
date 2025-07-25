@@ -1,5 +1,4 @@
-/* @ts-ignore */
-import { decrypt, encrypt } from 'libsignal/src/crypto'
+import { crypto } from '@wppconnect-team/libsignal-protocol'
 import { SenderKeyMessage } from './sender-key-message'
 import { SenderKeyName } from './sender-key-name'
 import { SenderKeyRecord } from './sender-key-record'
@@ -7,21 +6,34 @@ import { SenderKeyState } from './sender-key-state'
 
 export interface SenderKeyStore {
 	loadSenderKey(senderKeyName: SenderKeyName): Promise<SenderKeyRecord>
-
 	storeSenderKey(senderKeyName: SenderKeyName, record: SenderKeyRecord): Promise<void>
 }
 
+/**
+ * Handles group message encryption and decryption using the Sender Key protocol (Signal/libsignal).
+ *
+ * Reference: https://signal.org/docs/specifications/group/#sender-keys
+ */
 export class GroupCipher {
-	private readonly senderKeyStore: SenderKeyStore
-	private readonly senderKeyName: SenderKeyName
+	private senderKeyStore: SenderKeyStore
+	private senderKeyId: SenderKeyName
 
-	constructor(senderKeyStore: SenderKeyStore, senderKeyName: SenderKeyName) {
+	/**
+	 * @param senderKeyStore The storage interface for sender keys
+	 * @param senderKeyId The (groupId, senderId, deviceId) tuple
+	 */
+	constructor(senderKeyStore: SenderKeyStore, senderKeyId: SenderKeyName) {
 		this.senderKeyStore = senderKeyStore
-		this.senderKeyName = senderKeyName
+		this.senderKeyId = senderKeyId
 	}
 
-	public async encrypt(paddedPlaintext: Uint8Array | string): Promise<Uint8Array> {
-		const record = await this.senderKeyStore.loadSenderKey(this.senderKeyName)
+	/**
+	 * Encrypts a message for the group, returning a serialized SenderKeyMessage (with signature appended).
+	 * @param paddedPlaintext The plaintext message bytes, optionally padded
+	 * @returns Serialized SenderKeyMessage (protobuf + signature)
+	 */
+	async encrypt(paddedPlaintext: Uint8Array): Promise<Uint8Array> {
+		const record = await this.senderKeyStore.loadSenderKey(this.senderKeyId)
 		if (!record) {
 			throw new Error('No SenderKeyRecord found for encryption')
 		}
@@ -34,7 +46,7 @@ export class GroupCipher {
 		const iteration = senderKeyState.getSenderChainKey().getIteration()
 		const senderKey = this.getSenderKey(senderKeyState, iteration === 0 ? 0 : iteration + 1)
 
-		const ciphertext = await this.getCipherText(senderKey.getIv(), senderKey.getCipherKey(), paddedPlaintext)
+		const ciphertext = crypto.encrypt(senderKey.getCipherKey(), paddedPlaintext, senderKey.getIv())
 
 		const senderKeyMessage = new SenderKeyMessage(
 			senderKeyState.getKeyId(),
@@ -43,12 +55,17 @@ export class GroupCipher {
 			senderKeyState.getSigningKeyPrivate()
 		)
 
-		await this.senderKeyStore.storeSenderKey(this.senderKeyName, record)
+		await this.senderKeyStore.storeSenderKey(this.senderKeyId, record)
 		return senderKeyMessage.serialize()
 	}
 
-	public async decrypt(senderKeyMessageBytes: Uint8Array): Promise<Uint8Array> {
-		const record = await this.senderKeyStore.loadSenderKey(this.senderKeyName)
+	/**
+	 * Decrypts a group message from a serialized SenderKeyMessage (protobuf + signature).
+	 * @param senderKeyMessageBytes The received serialized SenderKeyMessage (protobuf + signature)
+	 * @returns Plaintext
+	 */
+	async decrypt(senderKeyMessageBytes: Uint8Array): Promise<Uint8Array> {
+		const record = await this.senderKeyStore.loadSenderKey(this.senderKeyId)
 		if (!record) {
 			throw new Error('No SenderKeyRecord found for decryption')
 		}
@@ -64,16 +81,12 @@ export class GroupCipher {
 			}
 		}
 
-		senderKeyMessage.verifySignature(senderKeyState.getSigningKeyPublic())
+		await senderKeyMessage.verifySignature(senderKeyState.getSigningKeyPublic())
 		const senderKey = this.getSenderKey(senderKeyState, senderKeyMessage.getIteration())
 
-		const plaintext = await this.getPlainText(
-			senderKey.getIv(),
-			senderKey.getCipherKey(),
-			senderKeyMessage.getCipherText()
-		)
+		const plaintext = crypto.decrypt(senderKey.getCipherKey(), senderKeyMessage.getCipherText(), senderKey.getIv())
 
-		await this.senderKeyStore.storeSenderKey(this.senderKeyName, record)
+		await this.senderKeyStore.storeSenderKey(this.senderKeyId, record)
 		return plaintext
 	}
 
@@ -105,26 +118,4 @@ export class GroupCipher {
 		return senderChainKey.getSenderMessageKey()
 	}
 
-	private async getPlainText(iv: Uint8Array, key: Uint8Array, ciphertext: Uint8Array): Promise<Uint8Array> {
-		try {
-			return decrypt(key, ciphertext, iv)
-		} catch (e) {
-			throw new Error('InvalidMessageException')
-		}
-	}
-
-	private async getCipherText(
-		iv: Uint8Array | string,
-		key: Uint8Array | string,
-		plaintext: Uint8Array | string
-	): Promise<Buffer> {
-		try {
-			const ivBuffer = typeof iv === 'string' ? Buffer.from(iv, 'base64') : iv
-			const keyBuffer = typeof key === 'string' ? Buffer.from(key, 'base64') : key
-			const plaintextBuffer = typeof plaintext === 'string' ? Buffer.from(plaintext) : plaintext
-			return encrypt(keyBuffer, plaintextBuffer, ivBuffer)
-		} catch (e) {
-			throw new Error('InvalidMessageException')
-		}
-	}
 }

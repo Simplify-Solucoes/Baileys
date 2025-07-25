@@ -1,5 +1,4 @@
-/* @ts-ignore */
-import { calculateSignature, verifySignature } from 'libsignal/src/curve'
+import { curve } from '@wppconnect-team/libsignal-protocol'
 import { proto } from '../../../WAProto/index.js'
 import { CiphertextMessage } from './ciphertext-message'
 
@@ -10,11 +9,23 @@ interface SenderKeyMessageStructure {
 }
 
 export class SenderKeyMessage extends CiphertextMessage {
+	static async create(
+		keyId: number,
+		iteration: number,
+		ciphertext: Uint8Array,
+		signingKeyPrivate: Uint8Array
+	): Promise<SenderKeyMessage> {
+		return new SenderKeyMessage(keyId, iteration, ciphertext, signingKeyPrivate)
+	}
+
+	static fromSerialized(serialized: Uint8Array): SenderKeyMessage {
+		return new SenderKeyMessage(null, null, null, null, serialized)
+	}
 	private readonly SIGNATURE_LENGTH = 64
 	private readonly messageVersion: number
-	private readonly keyId: number
+	private readonly _keyId: number
 	private readonly iteration: number
-	private readonly ciphertext: Uint8Array
+	private readonly _ciphertext: Uint8Array
 	private readonly signature: Uint8Array
 	private readonly serialized: Uint8Array
 
@@ -35,9 +46,9 @@ export class SenderKeyMessage extends CiphertextMessage {
 
 			this.serialized = serialized
 			this.messageVersion = (version & 0xff) >> 4
-			this.keyId = senderKeyMessage.id
+			this._keyId = senderKeyMessage.id
 			this.iteration = senderKeyMessage.iteration
-			this.ciphertext =
+			this._ciphertext =
 				typeof senderKeyMessage.ciphertext === 'string'
 					? Buffer.from(senderKeyMessage.ciphertext, 'base64')
 					: senderKeyMessage.ciphertext
@@ -57,15 +68,19 @@ export class SenderKeyMessage extends CiphertextMessage {
 
 			this.serialized = Buffer.concat([Buffer.from([version]), message, Buffer.from(signature)])
 			this.messageVersion = this.CURRENT_VERSION
-			this.keyId = keyId!
+			this._keyId = keyId!
 			this.iteration = iteration!
-			this.ciphertext = ciphertextBuffer
+			this._ciphertext = ciphertextBuffer
 			this.signature = signature
 		}
 	}
 
 	public getKeyId(): number {
-		return this.keyId
+		return this._keyId
+	}
+
+	public get keyId(): number {
+		return this._keyId
 	}
 
 	public getIteration(): number {
@@ -73,18 +88,21 @@ export class SenderKeyMessage extends CiphertextMessage {
 	}
 
 	public getCipherText(): Uint8Array {
-		return this.ciphertext
+		return this._ciphertext
 	}
 
-	public verifySignature(signatureKey: Uint8Array): void {
+	public async verifySignature(signatureKey: Uint8Array): Promise<boolean> {
 		const part1 = this.serialized.slice(0, this.serialized.length - this.SIGNATURE_LENGTH)
 		const part2 = this.serialized.slice(-1 * this.SIGNATURE_LENGTH)
-		const res = verifySignature(signatureKey, part1, part2)
-		if (!res) throw new Error('Invalid signature!')
+		return curve.Ed25519Verify(signatureKey, part1, part2)
+	}
+
+	public get ciphertext(): Uint8Array {
+		return this._ciphertext
 	}
 
 	private getSignature(signatureKey: Uint8Array, serialized: Uint8Array): Uint8Array {
-		return Buffer.from(calculateSignature(signatureKey, serialized))
+		return Buffer.from(curve.Ed25519Sign(signatureKey, serialized))
 	}
 
 	public serialize(): Uint8Array {

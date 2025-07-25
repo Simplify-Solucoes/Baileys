@@ -1,8 +1,7 @@
 import * as nodeCrypto from 'crypto'
-/* @ts-ignore */
-import { generateKeyPair } from 'libsignal/src/curve'
+import { curve, crypto } from '@wppconnect-team/libsignal-protocol'
 
-type KeyPairType = ReturnType<typeof generateKeyPair>
+type KeyPairType = ReturnType<typeof curve.createKeyPair>
 
 export function generateSenderKey(): Buffer {
 	return nodeCrypto.randomBytes(32)
@@ -19,7 +18,7 @@ export interface SigningKeyPair {
 
 export function generateSenderSigningKey(key?: KeyPairType): SigningKeyPair {
 	if (!key) {
-		key = generateKeyPair()
+		key = curve.createKeyPair(crypto.getRandomBytes(32))
 	}
 
 	return {
