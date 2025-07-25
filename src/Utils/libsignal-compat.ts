@@ -1,4 +1,5 @@
 import { Mutex } from 'async-mutex'
+import { randomBytes } from 'crypto'
 import { curve, crypto as libsignalCrypto } from '@wppconnect-team/libsignal-protocol'
 
 /**
@@ -71,7 +72,6 @@ async function getSecureRandomBytes(length: number): Promise<Uint8Array> {
 			return libsignalCrypto.getRandomBytes(length)
 		} catch (error) {
 			// Fallback to Node.js crypto if libsignal crypto fails
-			const { randomBytes } = await import('crypto')
 			return new Uint8Array(randomBytes(length))
 		}
 	})
@@ -238,7 +238,6 @@ export const libsignalSync = {
 		generateKeyPair: (): { privKey: Uint8Array; pubKey: Uint8Array } => {
 			try {
 				// Generate secure random seed synchronously
-				const { randomBytes } = require('crypto')
 				const seed = new Uint8Array(randomBytes(32))
 				
 				// Generate key pair using wppconnect
