@@ -538,18 +538,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						participantsList.push(...statusJidList)
 					}
 
-					// Log participants for group media messages
-					if (
-						jid.includes('@g.us') &&
-						(message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)
-					) {
-						console.log('👥 [relayMessage] Group participants for media message:', {
-							groupJid: jid,
-							participantsCount: participantsList.length,
-							participants: participantsList.slice(0, 5), // Show first 5
-							addressingMode: groupData?.addressingMode
-						})
-					}
 
 					if (!isStatus) {
 						additionalAttributes = {
@@ -560,17 +548,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 					const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false)
 					devices.push(...additionalDevices)
-
-					// Log device count for group media messages
-					if (
-						jid.includes('@g.us') &&
-						(message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)
-					) {
-						console.log('📱 [relayMessage] Devices for group media message:', {
-							devicesCount: additionalDevices.length,
-							totalDevices: devices.length
-						})
-					}
 				}
 
 				const patched = await patchMessageBeforeSending(message)
@@ -598,18 +575,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
-				// Log sender key distribution for group media messages
-				if (
-					jid.includes('@g.us') &&
-					(message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)
-				) {
-					console.log('🔑 [relayMessage] Sender key distribution:', {
-						totalDevices: devices.length,
-						senderKeyJidsCount: senderKeyJids.length,
-						senderKeyJids: senderKeyJids.slice(0, 3), // Show first 3
-						senderKeyMapSize: Object.keys(senderKeyMap).length
-					})
-				}
 
 				// if there are some participants with whom the session has not been established
 				// if there are, we re-send the senderkey
@@ -637,34 +602,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					content: ciphertext
 				})
 
-				// Create participant nodes for the encrypted group message
-				const allDeviceJids: string[] = []
-				for (const { user, device } of devices) {
-					const deviceJid = jidEncode(user, groupData?.addressingMode === 'lid' ? 'lid' : 's.whatsapp.net', device)
-					allDeviceJids.push(deviceJid)
-				}
-
-				if (allDeviceJids.length > 0) {
-					const groupMsg: proto.IMessage = {
-						deviceSentMessage: {
-							destinationJid,
-							message
-						}
-					}
-
-					const result = await createParticipantNodes(allDeviceJids, groupMsg, extraAttrs)
-					participants.push(...result.nodes)
-					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
-
-					// Log group media message participant creation
-					logger.trace(
-						{
-							allDeviceJidsCount: allDeviceJids.length,
-							participantNodesCreated: result.nodes.length
-						},
-						'created participant nodes for group media'
-					)
-				}
 
 				await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
 			} else {
@@ -716,16 +653,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || s1 || s2
 			}
 
-			// Log participant nodes for group media messages
-			if (
-				isGroup &&
-				(message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)
-			) {
-				console.log('👤 [relayMessage] Participant nodes created:', {
-					participantsLength: participants.length,
-					category: additionalAttributes?.['category']
-				})
-			}
 
 			if (participants.length) {
 				if (additionalAttributes?.['category'] === 'peer') {
