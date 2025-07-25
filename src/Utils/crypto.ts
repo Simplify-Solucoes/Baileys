@@ -59,53 +59,36 @@ export const CurveAsync = {
 }
 
 export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
-	// Create proper wppconnect identity key pair format
-	const wppIdentityKeyPair = {
-		privKey: new Uint8Array(identityKeyPair.private),
-		pubKey: Buffer.concat([KEY_BUNDLE_TYPE, identityKeyPair.public]) // Must have version byte
-	}
+	// Generate prekey using the direct approach (like original libsignal)
+	const preKey = Curve.generateKeyPair()
 	
-	// Use wppconnect's KeyHelper which creates the signature correctly
-	const signedPreKey = KeyHelper.generateSignedPreKey(wppIdentityKeyPair, keyId)
+	// Sign the raw 32-byte public key directly with identity private key
+	// This matches the original Signal protocol specification
+	const signature = Curve.sign(identityKeyPair.private, preKey.public)
 	
-	// But we need to ensure the signature matches the exact data format WhatsApp expects
-	// WhatsApp expects the signature to be over the 32-byte key (what goes in eSkeyVal)
-	const publicKeyToSend = Buffer.from(signedPreKey.keyPair.pubKey.slice(1)) // Remove version byte
+	// Verify our signature using the same verification WhatsApp server would use
+	const isValidSig = Curve.verify(identityKeyPair.public, preKey.public, signature)
 	
-	// Re-create signature specifically for the 32-byte key that will be sent
-	// This matches exactly what WhatsApp server will verify
-	const correctedSignature = curve.Ed25519Sign(
-		wppIdentityKeyPair.privKey,
-		publicKeyToSend // Sign exactly what goes in eSkeyVal
-	)
-	
-	// Convert to our KeyPair format
-	const keyPair: KeyPair = {
-		private: Buffer.from(signedPreKey.keyPair.privKey),
-		public: publicKeyToSend
-	}
-	
-	// Verify the corrected signature
-	const isValidSig = curve.Ed25519Verify(wppIdentityKeyPair.pubKey, publicKeyToSend, correctedSignature)
-	
-	console.log('signedKeyPair: using wppconnect with corrected signature', {
-		keyPairPublicLength: keyPair.public.length,
-		signatureLength: correctedSignature.length,
+	console.log('signedKeyPair: using original Signal protocol approach', {
+		keyPairPublicLength: preKey.public.length,
+		signatureLength: signature.length,
 		signatureValid: isValidSig,
 		keyId,
-		publicKeyHex: Buffer.from(keyPair.public).toString('hex').substring(0, 16) + '...',
-		signatureHex: Buffer.from(correctedSignature).toString('hex').substring(0, 16) + '...',
+		publicKeyHex: Buffer.from(preKey.public).toString('hex').substring(0, 16) + '...',
+		signatureHex: Buffer.from(signature).toString('hex').substring(0, 16) + '...',
 		identityKeyHex: Buffer.from(identityKeyPair.public).toString('hex').substring(0, 16) + '...',
-		identityWithVersionHex: Buffer.from(wppIdentityKeyPair.pubKey).toString('hex').substring(0, 16) + '...'
+		// Additional debug info
+		identityPrivateLength: identityKeyPair.private.length,
+		verificationTest: 'Direct signing/verification approach'
 	})
 
 	if (!isValidSig) {
-		throw new Error('Generated signature is invalid - this should not happen')
+		throw new Error('Generated signature is invalid - signature verification failed')
 	}
 
 	return { 
-		keyPair, 
-		signature: Buffer.from(correctedSignature), 
+		keyPair: preKey, 
+		signature: Buffer.from(signature), 
 		keyId 
 	}
 }
