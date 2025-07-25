@@ -23,7 +23,6 @@ import {
 	generateLoginNode,
 	generateMdTagPrefix,
 	generateRegistrationNode,
-	generateSignalPubKey,
 	getCodeFromWSError,
 	getErrorCodeFromStreamError,
 	getNextPreKeysNode,
@@ -222,7 +221,7 @@ export const makeSocket = (config: SocketConfig) => {
 	/** connection handshake */
 	const validateConnection = async () => {
 		let helloMsg: proto.IHandshakeMessage = {
-			clientHello: { ephemeral: generateSignalPubKey(ephemeralKeyPair.public) }
+			clientHello: { ephemeral: ephemeralKeyPair.public }
 		}
 		helloMsg = proto.HandshakeMessage.fromObject(helloMsg)
 
