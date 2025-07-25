@@ -4,7 +4,7 @@ import { NOISE_MODE, WA_CERT_DETAILS } from '../Defaults'
 import type { KeyPair } from '../Types'
 import type { BinaryNode } from '../WABinary'
 import { decodeBinaryNode } from '../WABinary'
-import { aesDecryptGCM, aesEncryptGCM, Curve, generateSignalPubKey, hkdf, sha256 } from './crypto'
+import { aesDecryptGCM, aesEncryptGCM, Curve, hkdf, sha256 } from './crypto'
 import type { ILogger } from './logger'
 
 const generateIV = (counter: number) => {
@@ -120,7 +120,7 @@ export const makeNoiseHandler = ({
 				throw new Boom('certification match failed', { statusCode: 400 })
 			}
 
-			const keyEnc = encrypt(generateSignalPubKey(noiseKey.public))
+			const keyEnc = encrypt(noiseKey.public)
 			await mixIntoKey(Curve.sharedKey(noiseKey.private, serverHello!.ephemeral!))
 
 			return keyEnc
