@@ -170,15 +170,24 @@ export const makeNoiseHandler = ({
 			const { intermediate: certIntermediate } = proto.CertChain.decode(certDecoded)
 			const { issuerSerial } = proto.CertChain.NoiseCertificate.Details.decode(certIntermediate!.details!)
 			
-			logger.trace({ 
-				issuerSerial: issuerSerial?.toString('hex'),
-				expectedSerial: WA_CERT_DETAILS.SERIAL.toString('hex')
+			const formatSerial = (serial: any): string => {
+				if (!serial) return 'null'
+				if (typeof serial === 'number') return serial.toString(16)
+				if (Buffer.isBuffer(serial)) return serial.toString('hex')
+				return String(serial)
+			}
+
+			logger.trace({
+				issuerSerial: formatSerial(issuerSerial),
+				expectedSerial: WA_CERT_DETAILS.SERIAL.toString(16),
+				issuerSerialType: typeof issuerSerial
 			}, 'noise: checking certificate serial')
 
 			if (issuerSerial !== WA_CERT_DETAILS.SERIAL) {
-				logger.error({ 
-					issuerSerial: issuerSerial?.toString('hex'),
-					expectedSerial: WA_CERT_DETAILS.SERIAL.toString('hex')
+				logger.error({
+					issuerSerial: formatSerial(issuerSerial),
+					expectedSerial: WA_CERT_DETAILS.SERIAL.toString(16),
+					issuerSerialType: typeof issuerSerial
 				}, 'noise: certificate serial mismatch')
 				throw new Boom('certification match failed', { statusCode: 400 })
 			}
