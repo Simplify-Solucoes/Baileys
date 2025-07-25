@@ -266,6 +266,14 @@ export const libsignalSync = {
 			privateKey: Uint8Array | Buffer
 		): Uint8Array => {
 			try {
+				// Debug logging
+				console.log('libsignal-compat: calculateAgreement called', {
+					publicKeyLength: publicKey?.length,
+					privateKeyLength: privateKey?.length,
+					publicKeyHex: Buffer.from(publicKey).toString('hex').substring(0, 16) + '...',
+					privateKeyHex: Buffer.from(privateKey).toString('hex').substring(0, 16) + '...'
+				})
+				
 				// Validate inputs
 				if (!publicKey || publicKey.length !== 32) {
 					throw new Error(`Invalid public key length: ${publicKey?.length}`)
@@ -278,8 +286,18 @@ export const libsignalSync = {
 				const pubKeyWithVersion = addVersionByte(publicKey)
 				const privKeyNormalized = normalizeKey(privateKey)
 				
+				console.log('libsignal-compat: calling curve.ECDHE', {
+					pubKeyWithVersionLength: pubKeyWithVersion.length,
+					pubKeyWithVersionHex: Buffer.from(pubKeyWithVersion).toString('hex').substring(0, 16) + '...'
+				})
+				
 				// Calculate shared secret using wppconnect ECDHE
 				const shared = curve.ECDHE(pubKeyWithVersion, privKeyNormalized)
+				
+				console.log('libsignal-compat: ECDHE result', {
+					sharedLength: shared?.length,
+					sharedHex: shared ? Buffer.from(shared).toString('hex').substring(0, 16) + '...' : 'null'
+				})
 				
 				// Validate output
 				if (!shared || shared.length !== 32) {
@@ -288,6 +306,7 @@ export const libsignalSync = {
 				
 				return normalizeKey(shared)
 			} catch (error) {
+				console.error('libsignal-compat: ECDH error', error)
 				throw new Error(`ECDH agreement failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
 			}
 		},
