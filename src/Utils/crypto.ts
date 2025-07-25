@@ -69,20 +69,7 @@ export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
 	// Verify our signature using the same verification WhatsApp server would use
 	const isValidSig = Curve.verify(identityKeyPair.public, preKey.public, signature)
 	
-	// Test compatibility by comparing with direct wppconnect curve operations
-	const directSignature = curve.Ed25519Sign(
-		new Uint8Array(identityKeyPair.private),
-		new Uint8Array(preKey.public)
-	)
-	
-	const identityWithVersion = Buffer.concat([KEY_BUNDLE_TYPE, identityKeyPair.public])
-	const directVerification = curve.Ed25519Verify(
-		identityWithVersion,
-		new Uint8Array(preKey.public),
-		directSignature
-	)
-	
-	console.log('signedKeyPair: compatibility analysis', {
+	console.log('signedKeyPair: using original Signal protocol approach', {
 		keyPairPublicLength: preKey.public.length,
 		signatureLength: signature.length,
 		signatureValid: isValidSig,
@@ -90,18 +77,10 @@ export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
 		publicKeyHex: Buffer.from(preKey.public).toString('hex').substring(0, 16) + '...',
 		signatureHex: Buffer.from(signature).toString('hex').substring(0, 16) + '...',
 		identityKeyHex: Buffer.from(identityKeyPair.public).toString('hex').substring(0, 16) + '...',
-		// Compatibility testing
-		directSignatureHex: Buffer.from(directSignature).toString('hex').substring(0, 16) + '...',
-		directVerification,
-		signaturesMatch: Buffer.compare(Buffer.from(signature), Buffer.from(directSignature)) === 0,
-		verificationTest: 'Testing compatibility between wrapper and direct calls'
+		// Additional debug info
+		identityPrivateLength: identityKeyPair.private.length,
+		verificationTest: 'Direct signing/verification approach'
 	})
-	
-	// If signatures don't match, there's a fundamental compatibility issue
-	if (Buffer.compare(Buffer.from(signature), Buffer.from(directSignature)) !== 0) {
-		console.error('CRITICAL: Signature mismatch between Curve wrapper and direct curve calls!')
-		console.error('This indicates a fundamental compatibility issue with the libsignal migration.')
-	}
 
 	if (!isValidSig) {
 		throw new Error('Generated signature is invalid - signature verification failed')
