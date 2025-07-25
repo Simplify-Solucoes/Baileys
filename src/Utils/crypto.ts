@@ -67,16 +67,9 @@ export const CurveAsync = {
 
 export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
 	const preKey = Curve.generateKeyPair()
-	// Sign the raw public key (without version byte) since that's what gets sent to WhatsApp
-	const signature = Curve.sign(identityKeyPair.private, preKey.public)
+	const pubKey = generateSignalPubKey(preKey.public)
 
-	console.log('signedKeyPair: debug info', {
-		keyPairPublicLength: preKey.public.length,
-		signatureLength: signature.length,
-		keyId,
-		publicKeyHex: Buffer.from(preKey.public).toString('hex').substring(0, 16) + '...',
-		signatureHex: Buffer.from(signature).toString('hex').substring(0, 16) + '...'
-	})
+	const signature = Curve.sign(identityKeyPair.private, pubKey)
 
 	return { keyPair: preKey, signature, keyId }
 }

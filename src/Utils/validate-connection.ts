@@ -91,18 +91,6 @@ export const generateRegistrationNode = (
 
 	const companionProto = proto.DeviceProps.encode(companion).finish()
 
-	// Debug logging for registration data
-	console.log('generateRegistrationNode: debug info', {
-		registrationId,
-		signedPreKeyId: signedPreKey.keyId,
-		signedIdentityKeyLength: signedIdentityKey.public.length,
-		signedPreKeyPublicLength: signedPreKey.keyPair.public.length,
-		signedPreKeySignatureLength: signedPreKey.signature.length,
-		signedIdentityKeyHex: Buffer.from(signedIdentityKey.public).toString('hex').substring(0, 16) + '...',
-		signedPreKeyPublicHex: Buffer.from(signedPreKey.keyPair.public).toString('hex').substring(0, 16) + '...',
-		signedPreKeySignatureHex: Buffer.from(signedPreKey.signature).toString('hex').substring(0, 16) + '...'
-	})
-
 	const registerPayload: proto.IClientPayload = {
 		...getClientPayload(config),
 		passive: false,
