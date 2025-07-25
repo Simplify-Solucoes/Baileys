@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'crypto'
-import { libsignalSync as libsignal } from './libsignal-compat'
+import { curve, crypto as libsignalCrypto } from '@wppconnect-team/libsignal-protocol'
 import { KEY_BUNDLE_TYPE } from '../Defaults'
 import type { KeyPair } from '../Types'
 
@@ -12,53 +12,21 @@ export const generateSignalPubKey = (pubKey: Uint8Array | Buffer) =>
 
 export const Curve = {
 	generateKeyPair: (): KeyPair => {
-		// Use synchronous compatibility wrapper that matches original API exactly
-		const { pubKey, privKey } = libsignal.curve.generateKeyPair()
+		const { pubKey, privKey } = curve.createKeyPair(libsignalCrypto.getRandomBytes(32))
 		return {
 			private: Buffer.from(privKey),
-			public: Buffer.from(pubKey) // Already 32 bytes from compat wrapper
+			// remove version byte
+			public: Buffer.from((pubKey as Uint8Array).slice(1))
 		}
 	},
 	sharedKey: (privateKey: Uint8Array, publicKey: Uint8Array) => {
-		// Use compatibility wrapper that matches calculateAgreement behavior
-		const shared = libsignal.curve.calculateAgreement(publicKey, privateKey)
+		const shared = curve.ECDHE(generateSignalPubKey(publicKey), privateKey)
 		return Buffer.from(shared)
 	},
-	sign: (privateKey: Uint8Array, buf: Uint8Array) => {
-		const signature = libsignal.curve.calculateSignature(privateKey, buf)
-		return Buffer.from(signature)
-	},
+	sign: (privateKey: Uint8Array, buf: Uint8Array) => curve.Ed25519Sign(privateKey, buf),
 	verify: (pubKey: Uint8Array, message: Uint8Array, signature: Uint8Array) => {
 		try {
-			libsignal.curve.verifySignature(pubKey, message, signature)
-			return true // verifySignature throws on failure, returns void on success
-		} catch (error) {
-			return false
-		}
-	}
-}
-
-// Async versions for proper async/await usage
-export const CurveAsync = {
-	generateKeyPair: async (): Promise<KeyPair> => {
-		const { pubKey, privKey } = await libsignal.curve.generateKeyPair()
-		return {
-			private: Buffer.from(privKey),
-			public: Buffer.from(pubKey)
-		}
-	},
-	sharedKey: async (privateKey: Uint8Array, publicKey: Uint8Array): Promise<Buffer> => {
-		const shared = await libsignal.curve.calculateAgreement(publicKey, privateKey)
-		return Buffer.from(shared)
-	},
-	sign: async (privateKey: Uint8Array, buf: Uint8Array): Promise<Buffer> => {
-		const signature = await libsignal.curve.calculateSignature(privateKey, buf)
-		return Buffer.from(signature)
-	},
-	verify: async (pubKey: Uint8Array, message: Uint8Array, signature: Uint8Array): Promise<boolean> => {
-		try {
-			await libsignal.curve.verifySignature(pubKey, message, signature)
-			return true
+			return curve.Ed25519Verify(generateSignalPubKey(pubKey), message, signature)
 		} catch (error) {
 			return false
 		}
