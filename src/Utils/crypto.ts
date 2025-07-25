@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'crypto'
-import { curve, crypto as libsignalCrypto } from '@wppconnect-team/libsignal-protocol'
+/* @ts-ignore */
+import * as libsignal from 'libsignal'
 import { KEY_BUNDLE_TYPE } from '../Defaults'
 import type { KeyPair } from '../Types'
 
@@ -12,7 +13,7 @@ export const generateSignalPubKey = (pubKey: Uint8Array | Buffer) =>
 
 export const Curve = {
 	generateKeyPair: (): KeyPair => {
-		const { pubKey, privKey } = curve.createKeyPair(libsignalCrypto.getRandomBytes(32))
+		const { pubKey, privKey } = libsignal.curve.generateKeyPair()
 		return {
 			private: Buffer.from(privKey),
 			// remove version byte
@@ -20,13 +21,14 @@ export const Curve = {
 		}
 	},
 	sharedKey: (privateKey: Uint8Array, publicKey: Uint8Array) => {
-		const shared = curve.ECDHE(generateSignalPubKey(publicKey), privateKey)
+		const shared = libsignal.curve.calculateAgreement(generateSignalPubKey(publicKey), privateKey)
 		return Buffer.from(shared)
 	},
-	sign: (privateKey: Uint8Array, buf: Uint8Array) => curve.Ed25519Sign(privateKey, buf),
+	sign: (privateKey: Uint8Array, buf: Uint8Array) => libsignal.curve.calculateSignature(privateKey, buf),
 	verify: (pubKey: Uint8Array, message: Uint8Array, signature: Uint8Array) => {
 		try {
-			return curve.Ed25519Verify(generateSignalPubKey(pubKey), message, signature)
+			libsignal.curve.verifySignature(generateSignalPubKey(pubKey), message, signature)
+			return true
 		} catch (error) {
 			return false
 		}
