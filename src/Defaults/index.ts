@@ -51,9 +51,10 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	auth: undefined as unknown as AuthenticationState,
 	markOnlineOnConnect: true,
 	syncFullHistory: false,
-	patchMessageBeforeSending: (msg) => {
+	patchMessageBeforeSending: msg => {
 		// Apply the MD patch for interactive messages (buttons, lists, etc.)
-		if (msg?.buttonsMessage || 
+		if (
+			msg?.buttonsMessage ||
 			msg?.templateMessage ||
 			msg?.listMessage ||
 			msg?.interactiveMessage?.nativeFlowMessage ||

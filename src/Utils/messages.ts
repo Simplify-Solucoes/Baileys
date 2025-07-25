@@ -561,12 +561,12 @@ export const generateWAMessageContent = async (
 		}
 	} else if ('buttons' in message && !!(message as any).buttons) {
 		const buttonsMessage: any = {
-			buttons: (message as any).buttons.map((b: any) => ({ 
-				...b, 
-				type: proto.Message.ButtonsMessage.Button.Type.RESPONSE 
+			buttons: (message as any).buttons.map((b: any) => ({
+				...b,
+				type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
 			}))
 		}
-		
+
 		if ('text' in message) {
 			buttonsMessage.contentText = message.text
 			buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.EMPTY
@@ -574,27 +574,28 @@ export const generateWAMessageContent = async (
 			if ('caption' in message) {
 				buttonsMessage.contentText = (message as any).caption
 			}
-			
+
 			const type = Object.keys(m)[0]?.replace('Message', '').toUpperCase()
-			buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType[type as keyof typeof proto.Message.ButtonsMessage.HeaderType]
-			
+			buttonsMessage.headerType =
+				proto.Message.ButtonsMessage.HeaderType[type as keyof typeof proto.Message.ButtonsMessage.HeaderType]
+
 			Object.assign(buttonsMessage, m)
 		}
-		
+
 		if ('footer' in message && !!(message as any).footer) {
 			buttonsMessage.footerText = (message as any).footer
 		}
-		
+
 		if ('title' in message && !!(message as any).title) {
 			buttonsMessage.text = (message as any).title
 			buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.TEXT
 		}
-		
+
 		buttonsMessage.contextInfo = {
 			...((message as any).contextInfo || {}),
 			...((message as any).mentions ? { mentionedJid: (message as any).mentions } : {})
 		}
-		
+
 		m = { buttonsMessage: WAProto.Message.ButtonsMessage.fromObject(buttonsMessage) }
 	}
 

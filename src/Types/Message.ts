@@ -235,13 +235,15 @@ export type AnyRegularMessageContent = (
 			buttonText: string
 			footer?: string
 			sections: ListSection[]
-	  } & Mentionable & Contextable)
+	  } & Mentionable &
+			Contextable)
 	| ({
 			text: string
 			buttons: Button[]
 			footer?: string
 			title?: string
-	  } & Mentionable & Contextable)
+	  } & Mentionable &
+			Contextable)
 	| {
 			groupInvite: GroupInviteInfo
 	  }

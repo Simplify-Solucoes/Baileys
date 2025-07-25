@@ -539,7 +539,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 
 					// Log participants for group media messages
-					if (jid.includes('@g.us') && (message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)) {
+					if (
+						jid.includes('@g.us') &&
+						(message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)
+					) {
 						console.log('👥 [relayMessage] Group participants for media message:', {
 							groupJid: jid,
 							participantsCount: participantsList.length,
@@ -557,9 +560,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 					const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false)
 					devices.push(...additionalDevices)
-					
+
 					// Log device count for group media messages
-					if (jid.includes('@g.us') && (message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)) {
+					if (
+						jid.includes('@g.us') &&
+						(message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)
+					) {
 						console.log('📱 [relayMessage] Devices for group media message:', {
 							devicesCount: additionalDevices.length,
 							totalDevices: devices.length
@@ -593,7 +599,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 
 				// Log sender key distribution for group media messages
-				if (jid.includes('@g.us') && (message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)) {
+				if (
+					jid.includes('@g.us') &&
+					(message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)
+				) {
 					console.log('🔑 [relayMessage] Sender key distribution:', {
 						totalDevices: devices.length,
 						senderKeyJidsCount: senderKeyJids.length,
@@ -648,10 +657,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
 
 					// Log group media message participant creation
-					logger.trace({ 
-						allDeviceJidsCount: allDeviceJids.length,
-						participantNodesCreated: result.nodes.length
-					}, 'created participant nodes for group media')
+					logger.trace(
+						{
+							allDeviceJidsCount: allDeviceJids.length,
+							participantNodesCreated: result.nodes.length
+						},
+						'created participant nodes for group media'
+					)
 				}
 
 				await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
@@ -705,7 +717,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			// Log participant nodes for group media messages
-			if (isGroup && (message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)) {
+			if (
+				isGroup &&
+				(message.imageMessage || message.videoMessage || message.audioMessage || message.documentMessage)
+			) {
 				console.log('👤 [relayMessage] Participant nodes created:', {
 					participantsLength: participants.length,
 					category: additionalAttributes?.['category']
