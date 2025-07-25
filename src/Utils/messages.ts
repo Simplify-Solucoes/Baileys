@@ -361,7 +361,7 @@ export const generateWAMessageContent = async (
 	options: MessageContentGenerationOptions
 ) => {
 	let m: WAMessageContent = {}
-	if ('text' in message) {
+	if ('text' in message && !('sections' in message) && !('buttons' in message)) {
 		const extContent = { text: message.text } as WATextMessage
 
 		let urlInfo = 'linkPreview' in message ? message.linkPreview : undefined
@@ -461,6 +461,16 @@ export const generateWAMessageContent = async (
 		m.messageContextInfo.messageAddOnDurationInSecs = message.type === 1 ? message.time || 86400 : 0
 	} else if ('buttonReply' in message) {
 		switch (message.type) {
+			case 'list':
+				m.listResponseMessage = {
+					title: message.buttonReply.title,
+					description: message.buttonReply.description,
+					singleSelectReply: {
+						selectedRowId: message.buttonReply.rowId
+					},
+					listType: proto.Message.ListResponseMessage.ListType.SINGLE_SELECT
+				}
+				break
 			case 'template':
 				m.templateButtonReplyMessage = {
 					selectedDisplayText: message.buttonReply.displayText,
@@ -473,6 +483,19 @@ export const generateWAMessageContent = async (
 					selectedButtonId: message.buttonReply.id,
 					selectedDisplayText: message.buttonReply.displayText,
 					type: proto.Message.ButtonsResponseMessage.Type.DISPLAY_TEXT
+				}
+				break
+			case 'interactive':
+				m.interactiveResponseMessage = {
+					body: {
+						text: message.buttonReply.displayText,
+						format: proto.Message.InteractiveResponseMessage.Body.Format.EXTENSIONS_1
+					},
+					nativeFlowResponseMessage: {
+						name: message.buttonReply.nativeFlows.name,
+						paramsJson: message.buttonReply.nativeFlows.paramsJson,
+						version: message.buttonReply.nativeFlows.version
+					}
 				}
 				break
 		}
@@ -533,6 +556,8 @@ export const generateWAMessageContent = async (
 		}
 	} else if ('requestPhoneNumber' in message) {
 		m.requestPhoneNumberMessage = {}
+	} else if ('sections' in message || 'buttons' in message) {
+		// These are handled later in the function
 	} else {
 		m = await prepareWAMessageMedia(message, options)
 	}
@@ -597,6 +622,24 @@ export const generateWAMessageContent = async (
 		}
 
 		m = { buttonsMessage: WAProto.Message.ButtonsMessage.fromObject(buttonsMessage) }
+	}
+
+	if ('sections' in message && !!message.sections) {
+		const listMessage: any = {
+			title: message.title,
+			buttonText: message.buttonText,
+			footerText: message.footer,
+			description: message.text,
+			sections: message.sections,
+			listType: proto.Message.ListMessage.ListType.SINGLE_SELECT
+		}
+		
+		listMessage.contextInfo = {
+			...((message as any).contextInfo || {}),
+			...((message as any).mentions ? { mentionedJid: (message as any).mentions } : {})
+		}
+		
+		m = { listMessage: WAProto.Message.ListMessage.fromObject(listMessage) }
 	}
 
 	if ('contextInfo' in message && !!message.contextInfo) {
@@ -702,7 +745,7 @@ export const generateWAMessage = async (jid: string, content: AnyMessageContent,
 }
 
 /** Get the key to access the true type of content */
-export const getContentType = (content: proto.IMessage | undefined) => {
+export const getContentType = (content: WAProto.IMessage | undefined) => {
 	if (content) {
 		const keys = Object.keys(content)
 		const key = keys.find(k => (k === 'conversation' || k.includes('Message')) && k !== 'senderKeyDistributionMessage')
