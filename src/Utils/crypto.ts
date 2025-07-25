@@ -59,37 +59,44 @@ export const CurveAsync = {
 }
 
 export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
-	// Generate the prekey pair first
-	const preKey = KeyHelper.generatePreKey(keyId)
+	// Create proper wppconnect identity key pair format
+	const wppIdentityKeyPair = {
+		privKey: new Uint8Array(identityKeyPair.private),
+		pubKey: Buffer.concat([KEY_BUNDLE_TYPE, identityKeyPair.public]) // Must have version byte
+	}
 	
-	// Extract the 32-byte public key (without version byte) that will be sent to WhatsApp
-	const publicKeyToSend = Buffer.from(preKey.keyPair.pubKey.slice(1))
+	// Use wppconnect's KeyHelper which creates the signature correctly
+	const signedPreKey = KeyHelper.generateSignedPreKey(wppIdentityKeyPair, keyId)
 	
-	// Create signature over the SAME 32-byte key that will be sent in eSkeyVal
-	// This ensures signature verification works on WhatsApp server
-	const signature = curve.Ed25519Sign(
-		new Uint8Array(identityKeyPair.private),
-		publicKeyToSend // Sign the 32-byte key that gets sent
+	// But we need to ensure the signature matches the exact data format WhatsApp expects
+	// WhatsApp expects the signature to be over the 32-byte key (what goes in eSkeyVal)
+	const publicKeyToSend = Buffer.from(signedPreKey.keyPair.pubKey.slice(1)) // Remove version byte
+	
+	// Re-create signature specifically for the 32-byte key that will be sent
+	// This matches exactly what WhatsApp server will verify
+	const correctedSignature = curve.Ed25519Sign(
+		wppIdentityKeyPair.privKey,
+		publicKeyToSend // Sign exactly what goes in eSkeyVal
 	)
 	
 	// Convert to our KeyPair format
 	const keyPair: KeyPair = {
-		private: Buffer.from(preKey.keyPair.privKey),
+		private: Buffer.from(signedPreKey.keyPair.privKey),
 		public: publicKeyToSend
 	}
 	
-	// Verify our signature locally to ensure it's valid
-	const identityPublicWithVersion = Buffer.concat([KEY_BUNDLE_TYPE, identityKeyPair.public])
-	const isValidSig = curve.Ed25519Verify(identityPublicWithVersion, publicKeyToSend, signature)
+	// Verify the corrected signature
+	const isValidSig = curve.Ed25519Verify(wppIdentityKeyPair.pubKey, publicKeyToSend, correctedSignature)
 	
-	console.log('signedKeyPair: fixed signature/data mismatch', {
+	console.log('signedKeyPair: using wppconnect with corrected signature', {
 		keyPairPublicLength: keyPair.public.length,
-		signatureLength: signature.length,
+		signatureLength: correctedSignature.length,
 		signatureValid: isValidSig,
 		keyId,
 		publicKeyHex: Buffer.from(keyPair.public).toString('hex').substring(0, 16) + '...',
-		signatureHex: Buffer.from(signature).toString('hex').substring(0, 16) + '...',
-		identityKeyHex: Buffer.from(identityKeyPair.public).toString('hex').substring(0, 16) + '...'
+		signatureHex: Buffer.from(correctedSignature).toString('hex').substring(0, 16) + '...',
+		identityKeyHex: Buffer.from(identityKeyPair.public).toString('hex').substring(0, 16) + '...',
+		identityWithVersionHex: Buffer.from(wppIdentityKeyPair.pubKey).toString('hex').substring(0, 16) + '...'
 	})
 
 	if (!isValidSig) {
@@ -98,7 +105,7 @@ export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
 
 	return { 
 		keyPair, 
-		signature: Buffer.from(signature), 
+		signature: Buffer.from(correctedSignature), 
 		keyId 
 	}
 }
