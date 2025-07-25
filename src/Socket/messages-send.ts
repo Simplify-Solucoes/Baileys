@@ -38,6 +38,8 @@ import {
 	areJidsSameUser,
 	type BinaryNode,
 	type BinaryNodeAttributes,
+	getBinaryFilteredBizBot,
+	getBinaryFilteredButtons,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	isJidGroup,
@@ -688,8 +690,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			if (!isNewsletter && buttonType && messages) {
 				const buttonsNode = getButtonArgs(messages)
-				;(stanza.content as BinaryNode[]).push(buttonsNode)
-				didPushAdditional = true
+				const filteredButtons = getBinaryFilteredButtons(additionalNodes ? additionalNodes : [])
+
+				if (filteredButtons) {
+					;(stanza.content as BinaryNode[]).push(...(additionalNodes || []))
+					didPushAdditional = true
+				} else {
+					;(stanza.content as BinaryNode[]).push(buttonsNode)
+				}
 			}
 
 			if (isJidUser(destinationJid)) {
@@ -699,8 +707,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						biz_bot: '1'
 					}
 				}
-				;(stanza.content as BinaryNode[]).push(botNode)
-				didPushAdditional = true
+
+				const filteredBizBot = getBinaryFilteredBizBot(additionalNodes ? additionalNodes : [])
+
+				if (filteredBizBot) {
+					;(stanza.content as BinaryNode[]).push(...(additionalNodes || []))
+					didPushAdditional = true
+				} else {
+					;(stanza.content as BinaryNode[]).push(botNode)
+				}
 			}
 
 			if (!didPushAdditional && additionalNodes && additionalNodes.length > 0) {
