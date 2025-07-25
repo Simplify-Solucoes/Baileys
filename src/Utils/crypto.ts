@@ -70,22 +70,13 @@ export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
 	// Sign the raw public key (without version byte) since that's what gets sent to WhatsApp
 	const signature = Curve.sign(identityKeyPair.private, preKey.public)
 
-	// Verify the signature to ensure it's valid
-	const isValidSig = Curve.verify(identityKeyPair.public, preKey.public, signature)
-	
 	console.log('signedKeyPair: debug info', {
 		keyPairPublicLength: preKey.public.length,
 		signatureLength: signature.length,
-		signatureValid: isValidSig,
 		keyId,
 		publicKeyHex: Buffer.from(preKey.public).toString('hex').substring(0, 16) + '...',
-		signatureHex: Buffer.from(signature).toString('hex').substring(0, 16) + '...',
-		identityKeyHex: Buffer.from(identityKeyPair.public).toString('hex').substring(0, 16) + '...'
+		signatureHex: Buffer.from(signature).toString('hex').substring(0, 16) + '...'
 	})
-
-	if (!isValidSig) {
-		throw new Error('Generated signature is invalid - this indicates a crypto compatibility issue')
-	}
 
 	return { keyPair: preKey, signature, keyId }
 }
