@@ -469,6 +469,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (mediaType) {
 				extraAttrs['mediatype'] = mediaType
 			}
+			
+			if (
+				messages?.pinInChatMessage ||
+				messages?.keepInChatMessage ||
+				message.reactionMessage ||
+				message.protocolMessage?.editedMessage
+			) {
+				extraAttrs['decrypt-fail'] = 'hide'
+			}
+
+			if (messages?.interactiveResponseMessage?.nativeFlowResponseMessage) {
+				extraAttrs['native_flow_name'] = messages?.interactiveResponseMessage?.nativeFlowResponseMessage.name || ''
+			}
 
 			if (isNewsletter) {
 				// Patch message if needed, then encode as plaintext
