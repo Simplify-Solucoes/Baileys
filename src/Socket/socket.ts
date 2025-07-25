@@ -221,43 +221,21 @@ export const makeSocket = (config: SocketConfig) => {
 
 	/** connection handshake */
 	const validateConnection = async () => {
-		logger.info('socket: starting connection validation')
-		
-		// Prepare client hello message
-		const ephemeralWithVersion = generateSignalPubKey(ephemeralKeyPair.public)
-		logger.info({ 
-			ephemeralOriginalLength: ephemeralKeyPair.public.length,
-			ephemeralWithVersionLength: ephemeralWithVersion.length
-		}, 'socket: prepared ephemeral key')
-		
 		let helloMsg: proto.IHandshakeMessage = {
-			clientHello: { ephemeral: ephemeralWithVersion }
+			clientHello: { ephemeral: generateSignalPubKey(ephemeralKeyPair.public) }
 		}
 		helloMsg = proto.HandshakeMessage.fromObject(helloMsg)
 
-		logger.info({ browser, helloMsg }, 'socket: sending client hello to WA')
+		logger.info({ browser, helloMsg }, 'connected to WA')
 
 		const init = proto.HandshakeMessage.encode(helloMsg).finish()
 
-		logger.info('socket: waiting for server response')
 		const result = await awaitNextMessage<Uint8Array>(init)
-		logger.info({ 
-			resultLength: result.length 
-		}, 'socket: received server response')
-		
 		const handshake = proto.HandshakeMessage.decode(result)
-		logger.info({ 
-			hasServerHello: !!handshake.serverHello,
-			ephemeralLength: handshake.serverHello?.ephemeral?.length,
-			staticLength: handshake.serverHello?.static?.length,
-			payloadLength: handshake.serverHello?.payload?.length
-		}, 'socket: decoded handshake from WA')
 
-		logger.info('socket: processing noise handshake')
+		logger.trace({ handshake }, 'handshake recv from WA')
+
 		const keyEnc = await noise.processHandshake(handshake, creds.noiseKey)
-		logger.info({ 
-			keyEncLength: keyEnc.length 
-		}, 'socket: noise handshake completed')
 
 		let node: proto.IClientPayload
 		if (!creds.me) {
