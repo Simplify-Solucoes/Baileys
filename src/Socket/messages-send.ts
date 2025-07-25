@@ -459,6 +459,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		await authState.keys.transaction(async () => {
+			let didPushAdditional = false
+			const messages = normalizeMessageContent(message)
+			const buttonType = messages ? getButtonType(messages) : undefined
+
 			const mediaType = getMediaType(message)
 			if (mediaType) {
 				extraAttrs['mediatype'] = mediaType
@@ -682,7 +686,24 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				logger.debug({ jid }, 'adding device identity')
 			}
 
-			if (additionalNodes && additionalNodes.length > 0) {
+			if (!isNewsletter && buttonType && messages) {
+				const buttonsNode = getButtonArgs(messages)
+				;(stanza.content as BinaryNode[]).push(buttonsNode)
+				didPushAdditional = true
+			}
+
+			if (isJidUser(destinationJid)) {
+				const botNode: BinaryNode = {
+					tag: 'bot',
+					attrs: {
+						biz_bot: '1'
+					}
+				}
+				;(stanza.content as BinaryNode[]).push(botNode)
+				didPushAdditional = true
+			}
+
+			if (!didPushAdditional && additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
 			}
 
