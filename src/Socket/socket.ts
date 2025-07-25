@@ -500,7 +500,7 @@ export const makeSocket = (config: SocketConfig) => {
 						{
 							tag: 'companion_server_auth_key_pub',
 							attrs: {},
-							content: authState.creds.noiseKey.public
+							content: generateSignalPubKey(authState.creds.noiseKey.public)
 						},
 						{
 							tag: 'companion_platform_id',
@@ -580,8 +580,8 @@ export const makeSocket = (config: SocketConfig) => {
 
 		const pairDeviceNode = getBinaryNodeChild(stanza, 'pair-device')
 		const refNodes = getBinaryNodeChildren(pairDeviceNode, 'ref')
-		const noiseKeyB64 = Buffer.from(creds.noiseKey.public).toString('base64')
-		const identityKeyB64 = Buffer.from(creds.signedIdentityKey.public).toString('base64')
+		const noiseKeyB64 = Buffer.from(generateSignalPubKey(creds.noiseKey.public)).toString('base64')
+		const identityKeyB64 = Buffer.from(generateSignalPubKey(creds.signedIdentityKey.public)).toString('base64')
 		const advB64 = creds.advSecretKey
 
 		let qrMs = qrTimeout || 60_000 // time to let a QR live
