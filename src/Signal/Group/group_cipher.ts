@@ -107,7 +107,7 @@ export class GroupCipher {
 
 	private async getPlainText(iv: Uint8Array, key: Uint8Array, ciphertext: Uint8Array): Promise<Uint8Array> {
 		try {
-			return decrypt(Buffer.from(key), Buffer.from(ciphertext), Buffer.from(iv))
+			return decrypt(key, ciphertext, iv)
 		} catch (e) {
 			throw new Error('InvalidMessageException')
 		}
