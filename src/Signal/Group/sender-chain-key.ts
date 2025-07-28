@@ -34,6 +34,6 @@ export class SenderChainKey {
 	}
 
 	private getDerivative(seed: Uint8Array, key: Buffer): Uint8Array {
-		return calculateMAC(key, seed)
+		return new Uint8Array(calculateMAC(key, Buffer.from(seed)))
 	}
 }
