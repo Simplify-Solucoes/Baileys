@@ -83,8 +83,8 @@ export class SenderKeyMessage extends CiphertextMessage {
 		if (!res) throw new Error('Invalid signature!')
 	}
 
-	private getSignature(signatureKey: Uint8Array, serialized: Uint8Array): Buffer {
-		return Buffer.from(calculateSignature(Buffer.from(signatureKey), Buffer.from(serialized)))
+	private getSignature(signatureKey: Uint8Array, serialized: Uint8Array): Uint8Array {
+		return Buffer.from(calculateSignature(signatureKey, serialized))
 	}
 
 	public serialize(): Uint8Array {
