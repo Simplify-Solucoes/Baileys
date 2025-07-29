@@ -196,12 +196,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// Include keys on retry 2+ (like whatsmeow's retryCount > 1 logic)
 			logger.debug({ msgKey }, 'including keys on retry 2+ for session reset')
 			forceIncludeKeys = true
-			
-			// For groups, also clear sender key memory
-			if (isJidGroup(msgKey.remoteJid!)) {
-				logger.debug({ msgKey }, 'clearing sender key memory for group message retry')
-				await authState.keys.set({ 'sender-key-memory': { [msgKey.remoteJid!]: null } })
-			}
 		}
 
 		const deviceIdentity = encodeSignedDeviceIdentity(account!, true)
