@@ -15,6 +15,7 @@ import type {
 	MessageGenerationOptionsFromContent,
 	MessageType,
 	MessageUserReceipt,
+	MessageWithContextInfo,
 	WAMediaUpload,
 	WAMessage,
 	WAMessageContent,
@@ -567,11 +568,14 @@ export const generateWAMessageContent = async (
 	}
 
 	if ('mentions' in message && message.mentions?.length) {
-		const messageType = Object.keys(m)[0]! as Exclude<keyof proto.IMessage, 'conversation'>
+		const messageType = Object.keys(m)[0]! as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		const key = m[messageType]
-		if ('contextInfo' in key!) {
-			key.contextInfo = key.contextInfo || {}
+		if ('contextInfo' in key! && !!key.contextInfo) {
 			key.contextInfo.mentionedJid = message.mentions
+		} else if (key!) {
+			key.contextInfo = {
+				mentionedJid: message.mentions
+			}
 		}
 	}
 
@@ -643,10 +647,12 @@ export const generateWAMessageContent = async (
 	}
 
 	if ('contextInfo' in message && !!message.contextInfo) {
-		const messageType = Object.keys(m)[0]! as Exclude<keyof proto.IMessage, 'conversation'>
+		const messageType = Object.keys(m)[0]! as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		const key = m[messageType]
-		if ('contextInfo' in key!) {
+		if ('contextInfo' in key! && !!key.contextInfo) {
 			key.contextInfo = { ...key.contextInfo, ...message.contextInfo }
+		} else if (key!) {
+			key.contextInfo = message.contextInfo
 		}
 	}
 
