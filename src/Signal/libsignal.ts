@@ -1,5 +1,6 @@
 /* @ts-ignore */
 import * as libsignal from 'libsignal'
+import type { StorageType } from 'libsignal/src/types'
 import type { SignalAuthState, SignalKeyStoreWithTransaction } from '../Types'
 import type { SignalRepository } from '../Types/Signal'
 import { generateSignalPubKey } from '../Utils'
@@ -75,7 +76,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				const { type: sigType, body } = await cipher.encrypt(data)
 				const type = sigType === 3 ? 'pkmsg' : 'msg'
-				return { type, ciphertext: Buffer.from(body, 'binary') }
+				return { type, ciphertext: Buffer.from(body as any, 'binary') }
 			})
 		},
 		async encryptGroupMessage({ group, meId, data }) {
@@ -113,7 +114,10 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-				await cipher.initOutgoing(session)
+				await cipher.initOutgoing({
+					...session,
+					identityKey: Buffer.from(session.identityKey)
+				})
 			})
 		},
 		jidToSignalProtocolAddress(jid) {
@@ -131,7 +135,7 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
 	return new SenderKeyName(group, jidToSignalProtocolAddress(user))
 }
 
-function signalStorage({ creds, keys }: SignalAuthState): SenderKeyStore & Record<string, any> {
+function signalStorage({ creds, keys }: SignalAuthState): SenderKeyStore & StorageType {
 	return {
 		loadSession: async (id: string) => {
 			const { [id]: sess } = await keys.get('session', [id])
@@ -142,26 +146,40 @@ function signalStorage({ creds, keys }: SignalAuthState): SenderKeyStore & Recor
 		storeSession: async (id: string, session: libsignal.SessionRecord) => {
 			await keys.set({ session: { [id]: session.serialize() } })
 		},
-		isTrustedIdentity: () => {
+		isTrustedIdentity: async (address: string, identityKey: Buffer) => {
 			return true
 		},
-		loadPreKey: async (id: number | string) => {
-			const keyId = id.toString()
-			const { [keyId]: key } = await keys.get('pre-key', [keyId])
+		loadPreKey: async (keyId: number) => {
+			const keyIdStr = keyId.toString()
+			const { [keyIdStr]: key } = await keys.get('pre-key', [keyIdStr])
 			if (key) {
 				return {
-					privKey: Buffer.from(key.private),
-					pubKey: Buffer.from(key.public)
+					keyId,
+					keyPair: {
+						privKey: Buffer.from(key.private),
+						pubKey: Buffer.from(key.public)
+					}
 				}
 			}
+			throw new Error(`PreKey not found for keyId: ${keyId}`)
 		},
-		removePreKey: (id: number) => keys.set({ 'pre-key': { [id]: null } }),
-		loadSignedPreKey: () => {
+		removePreKey: async (id: number) => {
+			await keys.set({ 'pre-key': { [id]: null } })
+		},
+		loadSignedPreKey: async (keyId: number) => {
 			const key = creds.signedPreKey
 			return {
 				privKey: Buffer.from(key.keyPair.private),
 				pubKey: Buffer.from(key.keyPair.public)
 			}
+		},
+		storeSignedPreKey: async (keyId: number, keyPair: any) => {
+			// Implementation for storing signed pre-key
+			// This is usually handled by the credential store
+		},
+		removeSignedPreKey: async (keyId: number) => {
+			// Implementation for removing signed pre-key
+			// This is usually handled by the credential store
 		},
 		loadSenderKey: async (senderKeyName: SenderKeyName) => {
 			const keyId = senderKeyName.toString()
@@ -177,12 +195,12 @@ function signalStorage({ creds, keys }: SignalAuthState): SenderKeyStore & Recor
 			const serialized = JSON.stringify(key.serialize())
 			await keys.set({ 'sender-key': { [keyId]: Buffer.from(serialized, 'utf-8') } })
 		},
-		getOurRegistrationId: () => creds.registrationId,
-		getOurIdentity: () => {
+		getOurRegistrationId: async () => creds.registrationId,
+		getOurIdentity: async () => {
 			const { signedIdentityKey } = creds
 			return {
 				privKey: Buffer.from(signedIdentityKey.private),
-				pubKey: generateSignalPubKey(signedIdentityKey.public)
+				pubKey: Buffer.from(generateSignalPubKey(signedIdentityKey.public))
 			}
 		}
 	}
