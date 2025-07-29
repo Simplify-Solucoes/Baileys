@@ -75,7 +75,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				const { type: sigType, body } = await cipher.encrypt(data)
 				const type = sigType === 3 ? 'pkmsg' : 'msg'
-				return { type, ciphertext: Buffer.from(body as any, 'binary') }
+				return { type, ciphertext: Buffer.from(body, 'binary') }
 			})
 		},
 		async encryptGroupMessage({ group, meId, data }) {
@@ -106,7 +106,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-				await cipher.initOutgoing(session as any)
+				await cipher.initOutgoing(session)
 			})
 		},
 		jidToSignalProtocolAddress(jid) {
@@ -124,7 +124,7 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
 	return new SenderKeyName(group, jidToSignalProtocolAddress(user))
 }
 
-function signalStorage({ creds, keys }: SignalAuthState): any {
+function signalStorage({ creds, keys }: SignalAuthState): SenderKeyStore {
 	return {
 		loadSession: async (id: string) => {
 			const { [id]: sess } = await keys.get('session', [id])
@@ -133,7 +133,7 @@ function signalStorage({ creds, keys }: SignalAuthState): any {
 			}
 		},
 		storeSession: async (id: string, session: libsignal.SessionRecord) => {
-			await keys.set({ session: { [id]: session.serialize() as any } })
+			await keys.set({ session: { [id]: session.serialize() } })
 		},
 		isTrustedIdentity: () => {
 			return true
@@ -148,7 +148,7 @@ function signalStorage({ creds, keys }: SignalAuthState): any {
 				}
 			}
 		},
-		removePreKey: (id: number) => keys.set({ 'pre-key': { [id]: null } }),
+		removePreKey: async (id: number) => await keys.set({ 'pre-key': { [id]: null } }),
 		loadSignedPreKey: () => {
 			const key = creds.signedPreKey
 			return {
