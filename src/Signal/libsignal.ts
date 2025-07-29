@@ -83,17 +83,24 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			const builder = new GroupSessionBuilder(storage)
 
 			const senderNameStr = senderName.toString()
+			console.log(`[DEBUG] Encrypting group message for group: ${group}, sender: ${senderNameStr}`)
 
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
+				console.log(`[DEBUG] Existing sender key found: ${!!senderKey}`)
+				
 				if (!senderKey) {
+					console.log(`[DEBUG] Creating new sender key record for ${senderNameStr}`)
 					await storage.storeSenderKey(senderName, new SenderKeyRecord())
 				}
 
 				const senderKeyDistributionMessage = await builder.create(senderName)
+				console.log(`[DEBUG] Created sender key distribution message, size: ${senderKeyDistributionMessage.serialize().length} bytes`)
+				
 				const session = new GroupCipher(storage, senderName)
 				const ciphertext = await session.encrypt(data)
+				console.log(`[DEBUG] Encrypted message, ciphertext size: ${ciphertext.length} bytes`)
 
 				return {
 					ciphertext,

@@ -563,12 +563,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const senderKeyJids: string[] = []
 				// ensure a connection is established with every device
+				logger.debug({ 
+					groupId: destinationJid, 
+					senderKeyMapSize: Object.keys(senderKeyMap).length, 
+					devicesCount: devices.length 
+				}, 'checking sender key distribution')
+				
 				for (const { user, device } of devices) {
 					const jid = jidEncode(user, groupData?.addressingMode === 'lid' ? 'lid' : 's.whatsapp.net', device)
-					if (!senderKeyMap[jid] || !!participant) {
+					const hasKey = !!senderKeyMap[jid]
+					
+					if (!hasKey || !!participant) {
 						senderKeyJids.push(jid)
 						// store that this person has had the sender keys sent to them
 						senderKeyMap[jid] = true
+						logger.debug({ jid, hadKey: hasKey }, 'will send sender key to device')
+					} else {
+						logger.debug({ jid }, 'device already has sender key')
 					}
 				}
 
@@ -576,7 +587,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// if there are some participants with whom the session has not been established
 				// if there are, we re-send the senderkey
 				if (senderKeyJids.length) {
-					logger.debug({ senderKeyJids }, 'sending new sender key')
+					logger.info({ 
+						senderKeyJids, 
+						groupId: destinationJid,
+						senderKeyDistributionSize: senderKeyDistributionMessage.length 
+					}, 'sending new sender key')
 
 					const senderKeyMsg: proto.IMessage = {
 						senderKeyDistributionMessage: {
