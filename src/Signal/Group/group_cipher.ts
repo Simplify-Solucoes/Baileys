@@ -9,6 +9,14 @@ export interface SenderKeyStore {
 	loadSenderKey(senderKeyName: SenderKeyName): Promise<SenderKeyRecord>
 
 	storeSenderKey(senderKeyName: SenderKeyName, record: SenderKeyRecord): Promise<void>
+	loadSession(id: string): Promise<any>
+	storeSession(id: string, session: any): Promise<void>
+	getOurIdentity(): any
+	isTrustedIdentity(id: string, publicKey: any): boolean
+	loadPreKey(id: number): Promise<any>
+	removePreKey(id: number): Promise<void>
+	loadSignedPreKey(): any
+	getOurRegistrationId(): number
 }
 
 export class GroupCipher {

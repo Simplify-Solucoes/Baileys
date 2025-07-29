@@ -9,6 +9,10 @@ export class SenderMessageKey {
 
 	constructor(iteration: number, seed: Uint8Array) {
 		const derivative = deriveSecrets(Buffer.from(seed), Buffer.alloc(32), Buffer.from('WhisperGroup'))
+		if (!derivative || !derivative[0] || !derivative[1]) {
+			throw new Error('Failed to derive secrets for sender message key')
+		}
+		
 		const keys = new Uint8Array(32)
 		keys.set(new Uint8Array(derivative[0].slice(16)))
 		keys.set(new Uint8Array(derivative[1].slice(0, 16)), 16)
