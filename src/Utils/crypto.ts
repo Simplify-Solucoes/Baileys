@@ -22,7 +22,7 @@ export const Curve = {
 	},
 	sharedKey: (privateKey: Uint8Array, publicKey: Uint8Array) => {
 		const shared = libsignal.curve.calculateAgreement(generateSignalPubKey(publicKey), privateKey)
-		return Buffer.from(shared)
+		return Buffer.from(shared as any)
 	},
 	sign: (privateKey: Uint8Array, buf: Uint8Array) => libsignal.curve.calculateSignature(privateKey, buf),
 	verify: (pubKey: Uint8Array, message: Uint8Array, signature: Uint8Array) => {
