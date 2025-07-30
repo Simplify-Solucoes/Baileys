@@ -924,7 +924,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			placeholderResendCache.set(messageKey?.id!, true)
 		}
 
-		// await delay(5000)
+		await delay(5000)
 
 		if (!placeholderResendCache.get(messageKey?.id!)) {
 			logger.debug({ messageKey }, 'message received while resend requested')
