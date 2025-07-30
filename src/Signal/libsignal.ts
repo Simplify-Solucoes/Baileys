@@ -57,7 +57,14 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 		async processSenderKeyDistributionMessage({ item, authorJid }) {
 			const builder = new GroupSessionBuilder(storage)
+			console.debug(`[processSenderKeyDistributionMessage] Processing from ${authorJid}`, {
+				hasGroupId: !!item.groupId,
+				groupId: item.groupId,
+				hasAxolotlMessage: !!item.axolotlSenderKeyDistributionMessage
+			})
+			
 			if (!item.groupId) {
+				console.error(`[processSenderKeyDistributionMessage] Missing groupId for sender key from ${authorJid}:`, item)
 				throw new Error('Group ID is required for sender key distribution message')
 			}
 

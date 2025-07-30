@@ -205,13 +205,20 @@ export const decryptMessageNode = (
 						)
 						msg = msg.deviceSentMessage?.message || msg
 						if (msg.senderKeyDistributionMessage) {
+							console.debug(`[decode-wa-message] Found sender key distribution message from ${author}`, {
+								messageKey: fullMessage.key,
+								hasGroupId: !!msg.senderKeyDistributionMessage.groupId,
+								groupId: msg.senderKeyDistributionMessage.groupId
+							})
 							//eslint-disable-next-line max-depth
 							try {
 								await repository.processSenderKeyDistributionMessage({
 									authorJid: author,
 									item: msg.senderKeyDistributionMessage
 								})
+								console.debug(`[decode-wa-message] Successfully processed sender key from ${author}`)
 							} catch (err) {
+								console.error(`[decode-wa-message] Failed to process sender key from ${author}:`, err)
 								logger.error({ key: fullMessage.key, err }, 'failed to decrypt message')
 							}
 						}
