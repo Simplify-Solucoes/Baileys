@@ -181,27 +181,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
 
 		if (retryCount === 1) {
-			// Always try phone companion first for all message types (like whatsmeow)
-			logger.debug({ msgKey }, 'requesting message from phone companion')
-			const phoneResult = await requestPlaceholderResend(msgKey)
-			logger.debug(`sendRetryRequest: requested placeholder resend for message ${phoneResult}`)
-			
-			// Only force keys for 1-to-1 chats on first retry (they're more reliable)
-			if (!isJidGroup(msgKey.remoteJid!)) {
-				logger.debug({ msgKey }, 'forcing immediate session reset for 1-to-1 chat')
-				forceIncludeKeys = true
-			}
-			// Groups: Let phone companion work first, keys only on retry 2+
-		} else if (retryCount >= 2) {
-			// Include keys on retry 2+ (like whatsmeow's retryCount > 1 logic)
-			logger.debug({ msgKey }, 'including keys on retry 2+ for session reset')
-			forceIncludeKeys = true
-			
-			// For groups, also clear sender key memory
-			if (isJidGroup(msgKey.remoteJid!)) {
-				logger.debug({ msgKey }, 'clearing sender key memory for group message retry')
-				await authState.keys.set({ 'sender-key-memory': { [msgKey.remoteJid!]: null } })
-			}
+			//request a resend via phone
+			const msgId = await requestPlaceholderResend(msgKey)
+			logger.debug(`sendRetryRequest: requested placeholder resend for message ${msgId}`)
 		}
 
 		const deviceIdentity = encodeSignedDeviceIdentity(account!, true)
@@ -919,7 +901,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			throw new Boom('Not authenticated')
 		}
 
-		// Check for existing request (like whatsmeow's alreadyRequesting check)
 		if (placeholderResendCache.get(messageKey?.id!)) {
 			logger.debug({ messageKey }, 'already requested resend')
 			return
@@ -927,13 +908,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			placeholderResendCache.set(messageKey?.id!, true)
 		}
 
-		// Option 1: Immediate request (like whatsmeow's SynchronousAck)
-		// Option 2: Add delay like whatsmeow's delayedRequestMessageFromPhone
-		// Using immediate for faster recovery (can be made configurable later)
-		
-		// Check if message arrived while we were preparing the request
+		await delay(5000)
+
 		if (!placeholderResendCache.get(messageKey?.id!)) {
-			logger.debug({ messageKey }, 'message received while preparing resend request')
+			logger.debug({ messageKey }, 'message received while resend requested')
 			return 'RESOLVED'
 		}
 
@@ -946,10 +924,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
 		}
 
-		// Send the request immediately (like whatsmeow's immediateRequestMessageFromPhone)
-		const result = await sendPeerDataOperationMessage(pdoMessage)
-		
-		// Set timeout for cleanup (like whatsmeow's context cancellation)
 		setTimeout(() => {
 			if (placeholderResendCache.get(messageKey?.id!)) {
 				logger.debug({ messageKey }, 'PDO message without response after 15 seconds. Phone possibly offline')
@@ -957,7 +931,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}, 15_000)
 
-		return result
+		return sendPeerDataOperationMessage(pdoMessage)
 	}
 
 	const handleCall = async (node: BinaryNode) => {
