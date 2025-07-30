@@ -158,14 +158,54 @@ function signalStorage({ creds, keys }: SignalAuthState): StorageType & SenderKe
 		loadSession: async (id: string) => {
 			const { [id]: sess } = await keys.get('session', [id])
 			if (sess) {
-				return libsignal.SessionRecord.deserialize(sess)
+				try {
+					// Handle both Buffer (new format) and direct object (existing format)
+					let sessionData
+					if (sess instanceof Buffer) {
+						// Parse JSON from Buffer (current storage format)
+						sessionData = JSON.parse(sess.toString())
+					} else {
+						// Direct object format (legacy or direct storage)
+						sessionData = sess
+					}
+					
+					// Ensure session data has the proper structure required by libsignal
+					if (!sessionData.version) {
+						console.debug(`Adding missing version to session ${id}`)
+						sessionData.version = 'v1'
+					}
+					if (!sessionData._sessions) {
+						console.debug(`Session ${id} has no _sessions field, initializing empty`)
+						sessionData._sessions = {}
+					}
+					
+					// sessionData should now be a SerializedSessionRecordData object
+					const sessionRecord = libsignal.SessionRecord.deserialize(sessionData)
+					console.debug(`Successfully loaded session for ${id}`, { hasOpenSession: sessionRecord.haveOpenSession() })
+					return sessionRecord
+				} catch (error) {
+					console.error('Failed to deserialize session:', id, error, { sessionType: typeof sess, isBuffer: sess instanceof Buffer })
+					// Return null so a new session can be created
+					return null
+				}
 			}
 			return null
 		},
 		storeSession: async (id: string, session: libsignal.SessionRecord) => {
-			const serialized = session.serialize()
-			const buffer = serialized instanceof Uint8Array ? Buffer.from(serialized) : Buffer.from(JSON.stringify(serialized))
-			await keys.set({ session: { [id]: buffer } })
+			try {
+				const serialized = session.serialize()
+				// Store the serialized session data as JSON in Buffer format
+				// This maintains consistency with other key storage in Baileys
+				const buffer = Buffer.from(JSON.stringify(serialized))
+				await keys.set({ session: { [id]: buffer } })
+				console.debug(`Successfully stored session for ${id}`, { 
+					hasOpenSession: session.haveOpenSession(),
+					sessionCount: Object.keys(serialized._sessions || {}).length 
+				})
+			} catch (error) {
+				console.error(`Failed to store session for ${id}:`, error)
+				throw error
+			}
 		},
 		isTrustedIdentity: async (_address: string, _identityKey: Buffer) => {
 			return true
