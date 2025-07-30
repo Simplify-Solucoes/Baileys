@@ -2,7 +2,7 @@
 import * as libsignal from 'libsignal'
 import type { SignalAuthState, SignalKeyStoreWithTransaction } from '../Types'
 import type { SignalRepository } from '../Types/Signal'
-//import type { StorageType } from 'libsignal'
+import type { StorageType } from 'libsignal'
 import { generateSignalPubKey } from '../Utils'
 import { jidDecode } from '../WABinary'
 import { SenderKeyName } from './Group/sender-key-name'
@@ -11,7 +11,7 @@ import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from '
 import type { SenderKeyStore } from './Group/group_cipher'
 
 export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository {
-	const storage : SenderKeyStore = signalStorage(auth)
+	const storage : StorageType & SenderKeyStore = signalStorage(auth)
 	return {
 		decryptGroupMessage({ group, authorJid, msg }) {
 			const senderName = jidToSignalSenderKeyName(group, authorJid)
@@ -158,7 +158,7 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
 	return new SenderKeyName(group, jidToSignalProtocolAddress(user))
 }
 
-function signalStorage({ creds, keys }: SignalAuthState): & SenderKeyStore & Record<string, any> {
+function signalStorage({ creds, keys }: SignalAuthState): StorageType & SenderKeyStore & Record<string, any> {
 	return {
 		loadSession: async (id: string) => {
 			console.debug(`[loadSession] Attempting to load session for ID: ${id}`)
