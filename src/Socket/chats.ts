@@ -968,7 +968,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const upsertMessage = ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType) => {
+		console.debug(`[upsertMessage] Emitting messages.upsert event, type: ${type}, messageId: ${msg.key.id}`)
 		ev.emit('messages.upsert', { messages: [msg], type })
+		console.debug(`[upsertMessage] Event emitted successfully`)
 
 		if (!!msg.pushName) {
 			let jid = msg.key.fromMe ? authState.creds.me!.id : msg.key.participant || msg.key.remoteJid

@@ -758,6 +758,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleMessage = async (node: BinaryNode) => {
+		console.debug(`[handleMessage] Received message node from ${node.attrs.from}, id: ${node.attrs.id}`)
 		if (shouldIgnoreJid(node.attrs.from!) && node.attrs.from !== '@s.whatsapp.net') {
 			logger.debug({ key: node.attrs.key }, 'ignored message')
 			await sendMessageAck(node)
@@ -811,7 +812,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		try {
 			await Promise.all([
 				processingMutex.mutex(async () => {
+					console.debug(`[handleMessage] About to decrypt message from ${node.attrs.from}`)
 					await decrypt()
+					console.debug(`[handleMessage] Decryption complete, stubType: ${msg.messageStubType}`)
 					// message failed to decrypt
 					if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
 						if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
@@ -865,7 +868,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 					await sendMessageAck(node)
 
+					console.debug(`[handleMessage] About to upsert message, type: ${node.attrs.offline ? 'append' : 'notify'}`)
 					await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
+					console.debug(`[handleMessage] Message upserted successfully`)
 				})
 			])
 		} catch (error) {
