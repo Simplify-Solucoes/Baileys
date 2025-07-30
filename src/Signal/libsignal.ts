@@ -71,6 +71,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		async encryptMessage({ jid, data }) {
 			const addr = jidToSignalProtocolAddress(jid)
 			const cipher = new libsignal.SessionCipher(storage, addr)
+			console.debug(`[encryptMessage] Encrypting for JID: ${jid}, Address: ${addr.toString()}`)
 
 			// Use transaction to ensure atomicityAdd commentMore actions
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
@@ -113,7 +114,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
 
 			// Transform session to match libsignal expected type
-			const transformedSession = {
+			const transformedSession: any = {
 				registrationId: session.registrationId,
 				identityKey: Buffer.from(session.identityKey),
 				signedPreKey: {
@@ -123,8 +124,12 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						privKey: Buffer.alloc(32) // Dummy private key, not needed for outgoing
 					},
 					signature: session.signedPreKey.signature
-				},
-				preKey: {
+				}
+			}
+
+			// Add preKey only if it exists (optional for existing sessions)
+			if (session.preKey) {
+				transformedSession.preKey = {
 					keyId: session.preKey.keyId,
 					keyPair: {
 						pubKey: Buffer.from(session.preKey.publicKey),
@@ -156,6 +161,7 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
 function signalStorage({ creds, keys }: SignalAuthState): StorageType & SenderKeyStore & Record<string, any> {
 	return {
 		loadSession: async (id: string) => {
+			console.debug(`[loadSession] Attempting to load session for ID: ${id}`)
 			const { [id]: sess } = await keys.get('session', [id])
 			if (sess) {
 				try {
@@ -189,6 +195,7 @@ function signalStorage({ creds, keys }: SignalAuthState): StorageType & SenderKe
 					return null
 				}
 			}
+			console.debug(`[loadSession] No session found for ID: ${id}`)
 			return null
 		},
 		storeSession: async (id: string, session: libsignal.SessionRecord) => {

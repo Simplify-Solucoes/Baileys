@@ -118,9 +118,10 @@ export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: Si
 				const signedPreKey = signedKey ? extractKey(signedKey) : undefined
 				const preKey = key ? extractKey(key) : undefined
 
-				// Skip session injection if required keys are missing
-				if (!signedPreKey || !preKey || !identity || !registrationId) {
-					console.debug(`Skipping session injection for ${jid}: missing required keys`, {
+				// Skip session injection if essential keys are missing
+				// preKey is optional in this libsignal implementation
+				if (!signedPreKey || !identity || !registrationId) {
+					console.debug(`Skipping session injection for ${jid}: missing essential keys`, {
 						hasSignedPreKey: !!signedPreKey,
 						hasPreKey: !!preKey,
 						hasIdentity: !!identity,
@@ -129,14 +130,23 @@ export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: Si
 					return
 				}
 
+				// Create session object - preKey is optional
+				const sessionData: any = {
+					registrationId: registrationId,
+					identityKey: generateSignalPubKey(identity),
+					signedPreKey: signedPreKey
+				}
+
+				// Add preKey only if it exists
+				if (preKey) {
+					sessionData.preKey = preKey
+				} else {
+					console.debug(`Session for ${jid} has no preKey - using signedPreKey only`)
+				}
+
 				await repository.injectE2ESession({
 					jid,
-					session: {
-						registrationId: registrationId,
-						identityKey: generateSignalPubKey(identity),
-						signedPreKey: signedPreKey,
-						preKey: preKey
-					}
+					session: sessionData
 				})
 			})
 		)
