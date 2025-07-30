@@ -56,10 +56,9 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
 	createBufferedFunction<A extends any[], T>(work: (...args: A) => Promise<T>): (...args: A) => Promise<T>
 	/**
 	 * flushes all buffered events
-	 * @param force if true, will flush all data regardless of any pending buffers
 	 * @returns returns true if the flush actually happened, otherwise false
 	 */
-	flush(force?: boolean): boolean
+	flush(): boolean
 	/** is there an ongoing buffer */
 	isBuffering(): boolean
 }
@@ -74,7 +73,7 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 	const historyCache = new Set<string>()
 
 	let data = makeBufferData()
-	let buffersInProgress = 0
+	let isBuffering = false
 
 	// take the generic event and fire it as a baileys event
 	ev.on('event', (map: BaileysEventData) => {
@@ -84,23 +83,15 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 	})
 
 	function buffer() {
-		buffersInProgress += 1
+		if (!isBuffering) {
+			logger.info('Event buffer activated')
+			isBuffering = true
+		}
 	}
 
-	function flush(force = false) {
-		// no buffer going on
-		if (!buffersInProgress) {
+	function flush() {
+		if (!isBuffering) {
 			return false
-		}
-
-		if (!force) {
-			// reduce the number of buffers in progress
-			buffersInProgress -= 1
-			// if there are still some buffers going on
-			// then we don't flush now
-			if (buffersInProgress) {
-				return false
-			}
 		}
 
 		const newData = makeBufferData()
@@ -121,6 +112,7 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		}
 
 		data = newData
+		isBuffering = false
 
 		logger.trace({ conditionalChatUpdatesLeft }, 'released buffered events')
 
@@ -139,7 +131,7 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 			}
 		},
 		emit<T extends BaileysEvent>(event: BaileysEvent, evData: BaileysEventMap[T]) {
-			if (buffersInProgress && BUFFERABLE_EVENT_SET.has(event)) {
+			if (isBuffering && BUFFERABLE_EVENT_SET.has(event)) {
 				append(data, historyCache, event as BufferableEvent, evData, logger)
 				return true
 			}
@@ -147,18 +139,21 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 			return ev.emit('event', { [event]: evData })
 		},
 		isBuffering() {
-			return buffersInProgress > 0
+			return isBuffering
 		},
 		buffer,
 		flush,
 		createBufferedFunction(work) {
 			return async (...args) => {
-				buffer()
 				try {
 					const result = await work(...args)
 					return result
 				} finally {
-					flush()
+					// Only flush if we're currently buffering
+					// This ensures sent messages get flushed immediately
+					if (isBuffering) {
+						flush()
+					}
 				}
 			}
 		},
