@@ -181,9 +181,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
 
 		if (retryCount === 1) {
-			//request a resend via phone
-			const msgId = await requestPlaceholderResend(msgKey)
-			logger.debug(`sendRetryRequest: requested placeholder resend for message ${msgId}`)
+			logger.debug({ msgKey }, 'requesting message from phone companion')
+			const phoneResult = await requestPlaceholderResend(msgKey)
+			logger.debug(`sendRetryRequest: requested placeholder resend for message ${phoneResult}`)
+			
+			// Only force keys for 1-to-1 chats on first retry (they're more reliable)
+			if (!isJidGroup(msgKey.remoteJid!)) {
+				logger.debug({ msgKey }, 'forcing immediate session reset for 1-to-1 chat')
+				forceIncludeKeys = true
+			}
+			// Groups: Let phone companion work first, keys only on retry 2+
+		} else if (retryCount >= 2) {
+			// Include keys on retry 2+ (like whatsmeow's retryCount > 1 logic)
+			logger.debug({ msgKey }, 'including keys on retry 2+ for session reset')
+			forceIncludeKeys = true
 		}
 
 		const deviceIdentity = encodeSignedDeviceIdentity(account!, true)
@@ -908,7 +919,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			placeholderResendCache.set(messageKey?.id!, true)
 		}
 
-		await delay(5000)
+		// await delay(5000)
 
 		if (!placeholderResendCache.get(messageKey?.id!)) {
 			logger.debug({ messageKey }, 'message received while resend requested')
