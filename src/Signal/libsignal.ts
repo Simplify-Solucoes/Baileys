@@ -19,6 +19,38 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+				// Check if we have a valid sender key record before attempting decryption
+				const record = await storage.loadSenderKey(senderName)
+				if (record.isEmpty()) {
+					// Check if this is a message from our own device (same user, different device)
+					const { user: authorUser } = jidDecode(authorJid)!
+					const meId = (auth.creds as any).me?.id
+					const { user: meUser } = meId ? jidDecode(meId)! : { user: null }
+					
+					if (authorUser === meUser && meId) {
+						console.debug(`Message from our own device ${authorJid} - attempting cross-device sender key lookup`)
+						
+						// Try to find sender keys from any of our own devices for this group
+						const myDevicePrefix = `${group}::${meUser}::`
+						const allSenderKeys = await auth.keys.get('sender-key', [])
+						
+						console.debug(`Looking for sender keys with prefix: ${myDevicePrefix}`)
+						console.debug(`Available sender keys:`, Object.keys(allSenderKeys || {}))
+						
+						// Look for any sender key from our own devices in this group
+						const ownDeviceKeys = Object.keys(allSenderKeys || {}).filter(key => key.startsWith(myDevicePrefix))
+						
+						if (ownDeviceKeys.length > 0) {
+							console.debug(`Found ${ownDeviceKeys.length} sender keys from our own devices:`, ownDeviceKeys)
+							// For now, just log this - we could potentially copy/derive keys here
+							// TODO: Implement sender key copying/sharing between own devices
+						}
+					}
+					
+					console.debug(`Sender key record is empty for ${senderName.toString()} - triggering retry`)
+					throw new Error(`No sender key found for ${senderName.toString()}`)
+				}
+				
 				return cipher.decrypt(msg)
 			})
 		},
@@ -248,6 +280,7 @@ function signalStorage({ creds, keys }: SignalAuthState): StorageType & SenderKe
 				return SenderKeyRecord.deserialize(key)
 			}
 
+			// Return empty record to satisfy interface - we'll check validity in decryption
 			return new SenderKeyRecord()
 		},
 		storeSenderKey: async (senderKeyName: SenderKeyName, key: SenderKeyRecord) => {
