@@ -53,7 +53,7 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
 	buffer(): void
 	/** buffers all events till the promise completes */
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	createBufferedFunction<A extends any[], T>(work: (...args: A) => Promise<T>): (...args: A) => Promise<T>
+	createBufferedFunction<A extends any[], T>(work: (...args: A) => Promise<T>, options?: { flushOnComplete?: boolean }): (...args: A) => Promise<T>
 	/**
 	 * flushes all buffered events
 	 * @returns returns true if the flush actually happened, otherwise false
@@ -143,15 +143,16 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		},
 		buffer,
 		flush,
-		createBufferedFunction(work) {
+		createBufferedFunction(work, options = {}) {
 			return async (...args) => {
 				try {
 					const result = await work(...args)
 					return result
 				} finally {
-					// Always attempt to flush after work completes
-					// This ensures events are emitted even if buffering state is inconsistent
-					flush()
+					// Only flush if explicitly requested (for sent messages)
+					if (options.flushOnComplete) {
+						flush()
+					}
 				}
 			}
 		},

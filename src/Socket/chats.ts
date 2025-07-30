@@ -1066,6 +1066,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	})
 
+	// Separate function for sent messages - always flushes immediately
+	const upsertSentMessage = ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType) => {
+		ev.emit('messages.upsert', { messages: [msg], type })
+	}, { flushOnComplete: true })
+
 	ws.on('CB:presence', handlePresenceUpdate)
 	ws.on('CB:chatstate', handlePresenceUpdate)
 
@@ -1133,6 +1138,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		processingMutex,
 		fetchPrivacySettings,
 		upsertMessage,
+		upsertSentMessage,
 		appPatch,
 		sendPresenceUpdate,
 		presenceSubscribe,

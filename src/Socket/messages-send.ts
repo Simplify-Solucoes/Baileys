@@ -73,6 +73,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		processingMutex,
 		signalRepository,
 		upsertMessage,
+		upsertSentMessage,
 		query,
 		fetchPrivacySettings,
 		sendNode,
@@ -1326,7 +1327,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 				if (config.emitOwnEvents) {
 					process.nextTick(() => {
-						processingMutex.mutex(() => upsertMessage(fullMsg, 'append'))
+						processingMutex.mutex(() => upsertSentMessage(fullMsg, 'append'))
 					})
 				}
 
