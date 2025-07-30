@@ -118,15 +118,15 @@ export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: Si
 				const signedPreKey = signedKey ? extractKey(signedKey) : undefined
 				const preKey = key ? extractKey(key) : undefined
 
-				// Only skip if we're missing the truly essential keys
-				// signedPreKey, identity, and registrationId are required
-				// preKey is optional in this libsignal implementation
-				if (!signedPreKey || !identity || registrationId === undefined) {
-					console.debug(`Skipping session injection for ${jid}: missing essential keys`, {
+				// Only skip if we're missing critical keys
+				// Note: preKey is optional in WhatsApp's protocol
+				// registrationId can be 0, which is valid
+				if (!signedPreKey || !identity || registrationId === undefined || registrationId === null) {
+					console.debug(`Skipping session injection for ${jid}: missing critical keys`, {
 						hasSignedPreKey: !!signedPreKey,
-						hasPreKey: !!preKey,
 						hasIdentity: !!identity,
-						hasRegistrationId: registrationId !== undefined
+						hasPreKey: !!preKey,
+						registrationId
 					})
 					return
 				}
