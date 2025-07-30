@@ -109,19 +109,33 @@ export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: Si
 	for (const nodesChunk of chunks) {
 		await Promise.all(
 			nodesChunk.map(async (node: BinaryNode) => {
-				const signedKey = getBinaryNodeChild(node, 'skey')!
-				const key = getBinaryNodeChild(node, 'key')!
-				const identity = getBinaryNodeChildBuffer(node, 'identity')!
+				const signedKey = getBinaryNodeChild(node, 'skey')
+				const key = getBinaryNodeChild(node, 'key')
+				const identity = getBinaryNodeChildBuffer(node, 'identity')
 				const jid = node.attrs.jid!
 				const registrationId = getBinaryNodeChildUInt(node, 'registration', 4)
+
+				const signedPreKey = signedKey ? extractKey(signedKey) : undefined
+				const preKey = key ? extractKey(key) : undefined
+
+				// Skip session injection if required keys are missing
+				if (!signedPreKey || !preKey || !identity || !registrationId) {
+					console.debug(`Skipping session injection for ${jid}: missing required keys`, {
+						hasSignedPreKey: !!signedPreKey,
+						hasPreKey: !!preKey,
+						hasIdentity: !!identity,
+						hasRegistrationId: !!registrationId
+					})
+					return
+				}
 
 				await repository.injectE2ESession({
 					jid,
 					session: {
-						registrationId: registrationId!,
+						registrationId: registrationId,
 						identityKey: generateSignalPubKey(identity),
-						signedPreKey: extractKey(signedKey)!,
-						preKey: extractKey(key)!
+						signedPreKey: signedPreKey,
+						preKey: preKey
 					}
 				})
 			})
