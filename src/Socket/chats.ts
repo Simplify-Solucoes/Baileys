@@ -1087,6 +1087,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			logger.info('Connection is now AwaitingInitialSync, buffering events')
 			ev.buffer()
 		}
+		
+		// Debug: log current sync state
+		logger.debug(`Current sync state: ${SyncState[syncState]}, receivedPendingNotifications: ${receivedPendingNotifications}`)
+		
+		// Fallback: if we've been buffering for too long without sync, go online
+		if (syncState === SyncState.AwaitingInitialSync && receivedPendingNotifications) {
+			setTimeout(() => {
+				if (syncState === SyncState.AwaitingInitialSync) {
+					logger.warn('Forcing transition to Online state after timeout - sync may have failed')
+					syncState = SyncState.Online
+					ev.flush()
+				}
+			}, 10000) // 10 second timeout
+		}
 	})
 
 	return {

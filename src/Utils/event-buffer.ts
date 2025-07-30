@@ -149,11 +149,9 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 					const result = await work(...args)
 					return result
 				} finally {
-					// Only flush if we're currently buffering
-					// This ensures sent messages get flushed immediately
-					if (isBuffering) {
-						flush()
-					}
+					// Always attempt to flush after work completes
+					// This ensures events are emitted even if buffering state is inconsistent
+					flush()
 				}
 			}
 		},
