@@ -169,23 +169,39 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		const key = `${msgId}:${msgKey?.participant}`
 		let retryCount = msgRetryCache.get<number>(key) || 0
-		if (retryCount >= maxMsgRetryCount) {
-			logger.debug({ retryCount, msgId }, 'reached retry limit, clearing')
+		
+		// Check if we already have a retry count from an incoming retry message
+		const children = getBinaryNodeChildren(node, 'enc')
+		if (children.length === 1 && children[0]) {
+			const retryCountInMsg = +(children[0].attrs?.count || 0)
+			if (retryCount === 0 && retryCountInMsg > 0) {
+				retryCount = retryCountInMsg
+			}
+		}
+		
+		retryCount += 1
+		msgRetryCache.set(key, retryCount)
+		
+		// Match whatsmeow: stop at retry count 5
+		if (retryCount >= 5) {
+			logger.warn({ retryCount, msgId }, 'Not sending any more retry receipts')
 			msgRetryCache.del(key)
 			return
 		}
 
-		retryCount += 1
-		msgRetryCache.set(key, retryCount)
+		// EXACT whatsmeow approach: only request from phone on retry 1
+		if (retryCount === 1) {
+			logger.debug({ msgKey }, 'requesting message from phone companion (whatsmeow approach)')
+			const phoneResult = await requestPlaceholderResend(msgKey)
+			logger.debug(`sendRetryRequest: requested placeholder resend for message ${phoneResult}`)
+			
+			// NO key forcing - let phone companion handle it
+			forceIncludeKeys = false
+		}
+		
+		// NO aggressive key forcing like whatsmeow - just rely on phone companion
 
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
-
-		if (retryCount === 1) {
-			//request a resend via phone
-			const msgId = await requestPlaceholderResend(msgKey)
-			logger.debug(`sendRetryRequest: requested placeholder resend for message ${msgId}`)
-		}
-
 		const deviceIdentity = encodeSignedDeviceIdentity(account!, true)
 		await authState.keys.transaction(async () => {
 			const receipt: BinaryNode = {
