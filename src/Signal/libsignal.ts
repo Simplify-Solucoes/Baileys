@@ -43,10 +43,10 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						console.debug(`Message from our own device ${authorJid} - attempting cross-device sender key lookup`)
 						
 						// Try to find sender keys from any of our own devices for this group
-						// Use more robust matching that handles device ID variations
+						const myDevicePrefix = `${group}::${meUser}::`
 						const allSenderKeys = await auth.keys.get('sender-key', [])
 						
-						console.debug(`[crossDeviceSync] Looking for sender keys for user: ${meUser} in group: ${group}`)
+						console.debug(`[crossDeviceSync] Looking for sender keys with prefix: ${myDevicePrefix}`)
 						console.debug(`[crossDeviceSync] Available sender keys:`, Object.keys(allSenderKeys || {}))  
 						console.debug(`[crossDeviceSync] Total sender keys count:`, Object.keys(allSenderKeys || {}).length)
 						
@@ -54,20 +54,8 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						const groupKeys = Object.keys(allSenderKeys || {}).filter(key => key.startsWith(`${group}::`))
 						console.debug(`[crossDeviceSync] All sender keys in group ${group}:`, groupKeys)
 						
-						// Look for any sender key from our own devices in this group using robust matching
-						// Handle both formatted user IDs (user:device) and simple user IDs
-						const normalizedMeUser = meUser.split(':')[0] // Get base user ID without device
-						const ownDeviceKeys = Object.keys(allSenderKeys || {}).filter(key => {
-							// Parse key format: group::user::device or group::user:device::device
-							const keyParts = key.split('::')
-							if (keyParts.length !== 3) return false
-							
-							const [keyGroup, keyUser] = keyParts
-							if (!keyUser) return false // Ensure keyUser is defined
-							const normalizedKeyUser = keyUser.split(':')[0] // Get base user ID
-							
-							return keyGroup === group && normalizedKeyUser === normalizedMeUser
-						})
+						// Look for any sender key from our own devices in this group
+						const ownDeviceKeys = Object.keys(allSenderKeys || {}).filter(key => key.startsWith(myDevicePrefix))
 						
 						if (ownDeviceKeys.length > 0) {
 							console.debug(`Found ${ownDeviceKeys.length} sender keys from our own devices:`, ownDeviceKeys)
@@ -91,22 +79,11 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 										console.debug(`Source key data structure:`, {
 											sourceKeyName,
 											hasKeyStates: !!parsedKeyData.keyStates,
-											keyStatesCount: parsedKeyData.keyStates?.length || 0,
-											hasVersion: !!parsedKeyData.version
+											keyStatesCount: parsedKeyData.keyStates?.length || 0
 										})
 										
-										// Enhanced validation - check for both keyStates and valid structure
+										// Ensure the key data is valid
 										if (parsedKeyData.keyStates && parsedKeyData.keyStates.length > 0) {
-											// Validate that at least one key state has a valid key
-											const hasValidKeyState = parsedKeyData.keyStates.some((keyState: any) => 
-												keyState && keyState.senderChainKey && keyState.senderMessageKeys
-											)
-											
-											if (!hasValidKeyState) {
-												console.warn(`Source key ${sourceKeyName} has empty key states`)
-												continue
-											}
-											
 											// Copy the sender key data to the new sender name
 											const targetKeyData = Buffer.from(JSON.stringify(parsedKeyData))
 											await auth.keys.set({ 
@@ -127,15 +104,13 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 													return decryptedMsg
 												} catch (decryptError) {
 													console.error(`Decryption failed even after key copy:`, decryptError)
-													// Remove the bad key copy and continue to next
-													await auth.keys.set({ 'sender-key': { [senderName.toString()]: null } })
-													continue
+													// Continue to next available key or fallback
 												}
 											} else {
 												console.warn(`Copied sender key but record is still empty for ${senderName.toString()}`)
 											}
 										} else {
-											console.warn(`Source key ${sourceKeyName} has invalid or empty key states`)
+											console.warn(`Source key ${sourceKeyName} has invalid key states`)
 										}
 									} else {
 										console.warn(`No key data found for source key ${sourceKeyName}`)
@@ -242,39 +217,24 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			const builder = new GroupSessionBuilder(storage)
 
 			const senderNameStr = senderName.toString()
-			console.log(`[encryptGroupMessage] Starting encryption for group: ${group}, sender: ${senderNameStr}`)
-			console.log(`[encryptGroupMessage] meId: ${meId}`)
+			console.log(`[DEBUG] Encrypting group message for group: ${group}, sender: ${senderNameStr}`)
 
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
-				console.log(`[encryptGroupMessage] Existing sender key found: ${!!senderKey}`)
+				console.log(`[DEBUG] Existing sender key found: ${!!senderKey}`)
 				
 				if (!senderKey) {
-					console.log(`[encryptGroupMessage] Creating new sender key record for ${senderNameStr}`)
-					const newRecord = new SenderKeyRecord()
-					console.log(`[encryptGroupMessage] New record isEmpty: ${newRecord.isEmpty()}`)
-					await storage.storeSenderKey(senderName, newRecord)
-					console.log(`[encryptGroupMessage] Stored new sender key record`)
+					console.log(`[DEBUG] Creating new sender key record for ${senderNameStr}`)
+					await storage.storeSenderKey(senderName, new SenderKeyRecord())
 				}
 
-				console.log(`[encryptGroupMessage] About to create sender key distribution message`)
 				const senderKeyDistributionMessage = await builder.create(senderName)
-				console.log(`[encryptGroupMessage] Created sender key distribution message, size: ${senderKeyDistributionMessage.serialize().length} bytes`)
+				console.log(`[DEBUG] Created sender key distribution message, size: ${senderKeyDistributionMessage.serialize().length} bytes`)
 				
-				console.log(`[encryptGroupMessage] About to encrypt data`)
 				const session = new GroupCipher(storage, senderName)
 				const ciphertext = await session.encrypt(data)
-				console.log(`[encryptGroupMessage] Encrypted message, ciphertext size: ${ciphertext.length} bytes`)
-
-				// Verify the sender key was properly stored after encryption
-				const { [senderNameStr]: finalSenderKey } = await auth.keys.get('sender-key', [senderNameStr])
-				console.log(`[encryptGroupMessage] Final verification - sender key exists: ${!!finalSenderKey}`)
-				
-				if (finalSenderKey) {
-					const record = SenderKeyRecord.deserialize(finalSenderKey)
-					console.log(`[encryptGroupMessage] Final sender key record isEmpty: ${record.isEmpty()}`)
-				}
+				console.log(`[DEBUG] Encrypted message, ciphertext size: ${ciphertext.length} bytes`)
 
 				return {
 					ciphertext,
