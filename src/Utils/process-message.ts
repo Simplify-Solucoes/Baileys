@@ -210,7 +210,10 @@ const processMessage = async (
 
 				break
 			case proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE:
+				logger?.info('=== APP_STATE_SYNC_KEY_SHARE RECEIVED ===')
 				const keys = protocolMsg.appStateSyncKeyShare!.keys
+				logger?.info({ keysCount: keys?.length || 0 }, 'Processing app state sync key share')
+				
 				if (keys?.length) {
 					let newAppStateSyncKeyId = ''
 					await keyStore.transaction(async () => {
@@ -227,9 +230,10 @@ const processMessage = async (
 						logger?.info({ newAppStateSyncKeyId, newKeys }, 'injecting new app state sync keys')
 					})
 
+					logger?.info({ newAppStateSyncKeyId }, 'Emitting creds.update with new app state sync key')
 					ev.emit('creds.update', { myAppStateKeyId: newAppStateSyncKeyId })
 				} else {
-					logger?.info({ protocolMsg }, 'recv app state sync with 0 keys')
+					logger?.warn({ protocolMsg }, 'recv app state sync with 0 keys - THIS IS UNUSUAL')
 				}
 
 				break

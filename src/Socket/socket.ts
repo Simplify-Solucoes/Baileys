@@ -620,6 +620,9 @@ export const makeSocket = (config: SocketConfig) => {
 
 			ev.emit('creds.update', updatedCreds)
 			ev.emit('connection.update', { isNewLogin: true, qr: undefined })
+			
+			logger.info('=== NEW LOGIN SUCCESSFUL ===')
+			logger.info('Expecting app-state-sync-key messages to arrive as protocol messages...')
 
 			await sendNode(reply)
 		} catch (error: any) {
@@ -634,6 +637,12 @@ export const makeSocket = (config: SocketConfig) => {
 
 		logger.info('opened connection to WA')
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
+
+		logger.info('=== CONNECTION OPENED ===')
+		logger.info(`Has myAppStateKeyId: ${!!authState.creds.myAppStateKeyId}`)
+		if (!authState.creds.myAppStateKeyId) {
+			logger.warn('WARNING: Connection opened but no myAppStateKeyId present. App state sync keys may not have been received yet.')
+		}
 
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
 

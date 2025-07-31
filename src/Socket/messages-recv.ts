@@ -863,6 +863,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					console.debug(`[handleMessage] About to decrypt message from ${node.attrs.from}`)
 					await decrypt()
 					console.debug(`[handleMessage] Decryption complete, stubType: ${msg.messageStubType}`)
+					
+					// Debug logging for protocol messages
+					if (msg.message?.protocolMessage) {
+						console.log('=== PROTOCOL MESSAGE RECEIVED ===')
+						console.log('Type:', msg.message.protocolMessage.type)
+						console.log('Has appStateSyncKeyShare:', !!msg.message.protocolMessage.appStateSyncKeyShare)
+						if (msg.message.protocolMessage.appStateSyncKeyShare) {
+							console.log('Keys count:', msg.message.protocolMessage.appStateSyncKeyShare.keys?.length || 0)
+						}
+					}
 					// message failed to decrypt
 					if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
 						if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {

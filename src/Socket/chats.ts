@@ -1028,7 +1028,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		const doAppStateSync = async () => {
+			logger.info(`=== DO APP STATE SYNC CALLED ===`)
+			logger.info(`Current sync state: ${syncState}`)
+			logger.info(`Has me.id: ${!!authState.creds.me?.id}`)
+			logger.info(`Has myAppStateKeyId: ${!!authState.creds.myAppStateKeyId}`)
+			
 			if (syncState === SyncState.Syncing) {
+				if (!authState.creds.myAppStateKeyId) {
+					logger.error('CRITICAL: Trying to sync app state but no myAppStateKeyId available!')
+				}
 				logger.info('Doing app state sync')
 				await resyncAppState(ALL_WA_PATCH_NAMES, true)
 
@@ -1039,6 +1047,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
+			} else {
+				logger.warn(`doAppStateSync called but syncState is ${syncState}, not Syncing`)
 			}
 		}
 
@@ -1060,9 +1070,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		])
 
 		// If the app state key arrives and we are waiting to sync, trigger the sync now.
-		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
-			logger.info('App state sync key arrived, triggering app state sync')
-			await doAppStateSync()
+		if (msg.message?.protocolMessage?.appStateSyncKeyShare) {
+			logger.info(`=== APP STATE SYNC KEY CHECK ===`)
+			logger.info(`Current sync state: ${syncState}`)
+			logger.info(`Keys received: ${msg.message.protocolMessage.appStateSyncKeyShare.keys?.length || 0}`)
+			
+			if (syncState === SyncState.Syncing) {
+				logger.info('App state sync key arrived during Syncing state, triggering app state sync')
+				await doAppStateSync()
+			} else {
+				logger.warn(`App state sync key arrived but sync state is ${syncState}, not triggering sync`)
+			}
 		}
 	})
 
