@@ -170,7 +170,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const msgId = msgKey.id!
 
 		const key = `${msgId}:${msgKey?.participant}`
-		let retryCount = msgRetryCache.get<number>(key) || 0
+		let retryCount: number = msgRetryCache.get<number>(key) || 0
 		
 		// Check if we already have a retry count from an incoming retry message
 		const children = getBinaryNodeChildren(node, 'enc')
@@ -206,11 +206,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// For own devices, use retry logic instead of PDO requests to avoid Error 479
 				// This allows the local sender key copying in libsignal.ts to work
 				
-				if (retryCount === 0) {
+				if (retryCount === 1) {
 					// First retry - let local key copying handle it
 					logger.debug({ msgKey }, 'First retry for own device - relying on local key copying')
 					return
-				} else if (retryCount === 1) {
+				} else if (retryCount === 2) {
 					// Second retry - force a session reset for 1-to-1 chats only
 					if (!isJidGroup(msgKey.remoteJid!)) {
 						logger.debug({ msgKey }, 'Second retry for own device 1-to-1 chat - forcing session reset')
