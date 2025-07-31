@@ -1112,7 +1112,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const timeoutMs = options?.missingSession ? 30_000 : 15_000
 		setTimeout(() => {
 			if (placeholderResendCache.get(messageKey?.id!)) {
-				logger.warn({ messageKey, timeoutMs, messageKey?.id! }, 'PDO message without response after timeout. Phone possibly offline')
+				logger.warn({ messageKey, timeoutMs, messageId: messageKey?.id! }, 'PDO message without response after timeout. Phone possibly offline')
 				placeholderResendCache.del(messageKey?.id!)
 			}
 		}, timeoutMs)
