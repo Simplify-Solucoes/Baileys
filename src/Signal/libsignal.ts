@@ -19,9 +19,21 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+				// First, check if we have a valid session for the author (for individual messages)
+				const authorAddress = jidToSignalProtocolAddress(authorJid)
+				const authorSession = await storage.loadSession(authorAddress.toString())
+				
+				console.debug(`[decryptGroupMessage] Checking session status for ${authorJid}:`, {
+					hasSession: !!authorSession,
+					hasOpenSession: authorSession ? authorSession.haveOpenSession() : false,
+					group,
+					authorJid
+				})
+				
 				// Check if we have a valid sender key record before attempting decryption
 				const record = await storage.loadSenderKey(senderName)
 				if (record.isEmpty()) {
+					console.debug(`[decryptGroupMessage] Sender key record is empty for ${senderName.toString()}`)
 					// Check if this is a message from our own device (same user, different device)
 					const { user: authorUser } = jidDecode(authorJid)!
 					const meId = (auth.creds as any).me?.id
@@ -34,16 +46,83 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						const myDevicePrefix = `${group}::${meUser}::`
 						const allSenderKeys = await auth.keys.get('sender-key', [])
 						
-						console.debug(`Looking for sender keys with prefix: ${myDevicePrefix}`)
-						console.debug(`Available sender keys:`, Object.keys(allSenderKeys || {}))
+						console.debug(`[crossDeviceSync] Looking for sender keys with prefix: ${myDevicePrefix}`)
+						console.debug(`[crossDeviceSync] Available sender keys:`, Object.keys(allSenderKeys || {}))  
+						console.debug(`[crossDeviceSync] Total sender keys count:`, Object.keys(allSenderKeys || {}).length)
+						
+						// Also check for any sender keys in this group regardless of device
+						const groupKeys = Object.keys(allSenderKeys || {}).filter(key => key.startsWith(`${group}::`))
+						console.debug(`[crossDeviceSync] All sender keys in group ${group}:`, groupKeys)
 						
 						// Look for any sender key from our own devices in this group
 						const ownDeviceKeys = Object.keys(allSenderKeys || {}).filter(key => key.startsWith(myDevicePrefix))
 						
 						if (ownDeviceKeys.length > 0) {
 							console.debug(`Found ${ownDeviceKeys.length} sender keys from our own devices:`, ownDeviceKeys)
-							// For now, just log this - we could potentially copy/derive keys here
-							// TODO: Implement sender key copying/sharing between own devices
+							
+							// Try to copy sender key from our own device with enhanced logic
+							for (const sourceKeyName of ownDeviceKeys) {
+								try {
+									console.debug(`Attempting to copy sender key from ${sourceKeyName} to ${senderName.toString()}`)
+									
+									const { [sourceKeyName]: sourceKeyData } = await auth.keys.get('sender-key', [sourceKeyName])
+									
+									if (sourceKeyData) {
+										// Parse and validate the source key data
+										let parsedKeyData
+										if (sourceKeyData instanceof Buffer) {
+											parsedKeyData = JSON.parse(sourceKeyData.toString())
+										} else {
+											parsedKeyData = sourceKeyData
+										}
+										
+										console.debug(`Source key data structure:`, {
+											sourceKeyName,
+											hasKeyStates: !!parsedKeyData.keyStates,
+											keyStatesCount: parsedKeyData.keyStates?.length || 0
+										})
+										
+										// Ensure the key data is valid
+										if (parsedKeyData.keyStates && parsedKeyData.keyStates.length > 0) {
+											// Copy the sender key data to the new sender name
+											const targetKeyData = Buffer.from(JSON.stringify(parsedKeyData))
+											await auth.keys.set({ 
+												'sender-key': { 
+													[senderName.toString()]: targetKeyData 
+												} 
+											})
+											
+											console.info(`Successfully copied sender key from ${sourceKeyName} to ${senderName.toString()}`)
+											
+											// Reload the record after copying to verify it works
+											const newRecord = await storage.loadSenderKey(senderName)
+											if (!newRecord.isEmpty()) {
+												console.info(`Cross-device sender key copy successful - attempting decryption`)
+												try {
+													const decryptedMsg = await cipher.decrypt(msg)
+													console.info(`Cross-device decryption successful for ${senderName.toString()}`)
+													return decryptedMsg
+												} catch (decryptError) {
+													console.error(`Decryption failed even after key copy:`, decryptError)
+													// Continue to next available key or fallback
+												}
+											} else {
+												console.warn(`Copied sender key but record is still empty for ${senderName.toString()}`)
+											}
+										} else {
+											console.warn(`Source key ${sourceKeyName} has invalid key states`)
+										}
+									} else {
+										console.warn(`No key data found for source key ${sourceKeyName}`)
+									}
+								} catch (copyError) {
+									console.error(`Failed to copy sender key from ${sourceKeyName}:`, copyError)
+									// Continue to next available key
+								}
+							}
+							
+							// If we reach here, cross-device key copying failed
+							console.warn(`All cross-device key copying attempts failed for ${senderName.toString()}`)
 						}
 					}
 					
@@ -51,7 +130,21 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					throw new Error(`No sender key found for ${senderName.toString()}`)
 				}
 				
-				return cipher.decrypt(msg)
+				console.debug(`[decryptGroupMessage] Attempting to decrypt group message with valid sender key record`)
+				
+				try {
+					return await cipher.decrypt(msg)
+				} catch (decryptError: any) {
+					console.error(`[decryptGroupMessage] Decryption failed for ${authorJid} in group ${group}:`, {
+						error: decryptError.message,
+						hasSession: !!authorSession,
+						hasOpenSession: authorSession ? authorSession.haveOpenSession() : false,
+						senderKeyRecordEmpty: record.isEmpty()
+					})
+					
+					// Re-throw with more context
+					throw new Error(`Group message decryption failed: ${decryptError.message} (hasSession: ${!!authorSession}, hasOpenSession: ${authorSession ? authorSession.haveOpenSession() : false})`)
+				}
 			})
 		},
 
@@ -282,18 +375,33 @@ function signalStorage({ creds, keys }: SignalAuthState): StorageType & SenderKe
 		},
 		loadSenderKey: async (senderKeyName: SenderKeyName) => {
 			const keyId = senderKeyName.toString()
+			console.debug(`[loadSenderKey] Loading sender key: ${keyId}`)
 			const { [keyId]: key } = await keys.get('sender-key', [keyId])
 			if (key) {
-				return SenderKeyRecord.deserialize(key)
+				console.debug(`[loadSenderKey] Found sender key: ${keyId}`)
+				const record = SenderKeyRecord.deserialize(key)
+				console.debug(`[loadSenderKey] Record isEmpty: ${record.isEmpty()}`)
+				return record
 			}
 
+			console.debug(`[loadSenderKey] No sender key found for: ${keyId}, returning empty record`)
 			// Return empty record to satisfy interface - we'll check validity in decryption
 			return new SenderKeyRecord()
 		},
 		storeSenderKey: async (senderKeyName: SenderKeyName, key: SenderKeyRecord) => {
 			const keyId = senderKeyName.toString()
 			const serialized = JSON.stringify(key.serialize())
+			console.debug(`[storeSenderKey] Storing sender key: ${keyId}`)
+			console.debug(`[storeSenderKey] Key data:`, {
+				keyId,
+				serializedSize: serialized.length,
+				isEmpty: key.isEmpty()
+			})
 			await keys.set({ 'sender-key': { [keyId]: Buffer.from(serialized, 'utf-8') } })
+			
+			// Verify the key was stored by immediately trying to load it
+			const { [keyId]: storedKey } = await keys.get('sender-key', [keyId])
+			console.debug(`[storeSenderKey] Verification - stored key exists:`, !!storedKey)
 		},
 		getOurRegistrationId: async () => creds.registrationId,
 		getOurIdentity: async () => {
