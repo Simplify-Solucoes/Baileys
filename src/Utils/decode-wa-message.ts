@@ -230,8 +230,29 @@ export const decryptMessageNode = (
 						}
 					} catch (err: any) {
 						logger.error({ key: fullMessage.key, err }, 'failed to decrypt message')
-						fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
-						fullMessage.messageStubParameters = [err.message]
+						
+						// Check if this is a group message decryption failure due to missing session/sender keys
+						// The error comes from libsignal as "session required" when trying to decrypt group messages
+						const e2eType = tag === 'plaintext' ? 'plaintext' : attrs.type
+						if (e2eType === 'skmsg' && (
+							err.message?.includes('session required') || 
+							err.message?.includes('No sender key found') ||
+							err.stack?.includes('SessionCipher.doDecryptWhisperMessage')
+						)) {
+							logger.info({ 
+								groupId: sender, 
+								authorJid: author, 
+								messageKey: fullMessage.key,
+								errorType: err.message
+							}, 'Group message decryption failed due to missing sender key/session - will request via callback')
+							
+							// Mark this error specifically so the message handler can request sender keys
+							fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
+							fullMessage.messageStubParameters = ['MISSING_SENDER_KEY', author, sender]
+						} else {
+							fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
+							fullMessage.messageStubParameters = [err.message]
+						}
 					}
 				}
 			}

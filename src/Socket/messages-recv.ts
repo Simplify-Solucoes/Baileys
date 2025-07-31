@@ -26,6 +26,8 @@ import {
 	derivePairingCodeKey,
 	encodeBigEndian,
 	encodeSignedDeviceIdentity,
+	encodeWAMessage,
+	generateMessageIDV2,
 	getCallStatusFromNode,
 	getHistoryMsg,
 	getNextPreKeys,
@@ -189,14 +191,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		// EXACT whatsmeow approach: only request from phone on retry 1
+		// Enhanced whatsmeow approach: request from phone on retry 1 with context
 		if (retryCount === 1) {
-			logger.debug({ msgKey }, 'requesting message from phone companion (whatsmeow approach)')
-			const phoneResult = await requestPlaceholderResend(msgKey)
-			logger.debug(`sendRetryRequest: requested placeholder resend for message ${phoneResult}`)
+			logger.debug({ msgKey, isGroup: isJidGroup(msgKey.remoteJid!) }, 'requesting message from phone companion (enhanced whatsmeow approach)')
 			
-			// NO key forcing - let phone companion handle it
-			forceIncludeKeys = false
+			// For 1-to-1 chats, force immediate session reset to fix session sync issues
+			if (!isJidGroup(msgKey.remoteJid!)) {
+				logger.debug({ msgKey }, 'forcing immediate session reset for 1-to-1 chat')
+				forceIncludeKeys = true
+			}
+			
+			// Include session context for group messages or when we know there are session issues
+			const options = isJidGroup(msgKey.remoteJid!) && msgKey.participant ? {
+				missingSession: true,
+				participantJid: msgKey.participant,
+				groupJid: msgKey.remoteJid!,
+				errorType: 'retry_request'
+			} : undefined
+			
+			const phoneResult = await requestPlaceholderResend(msgKey, options)
+			logger.debug({ msgKey, options, result: phoneResult }, 'sendRetryRequest: requested placeholder resend with enhanced context')
+			
+			// NO key forcing for groups - let phone companion handle it
+			if (isJidGroup(msgKey.remoteJid!)) {
+				forceIncludeKeys = false
+			}
 		}
 		
 		// NO aggressive key forcing like whatsmeow - just rely on phone companion
@@ -836,6 +855,83 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
 							return sendMessageAck(node, NACK_REASONS.ParsingError)
 						}
+						
+						// Handle missing sender key for group messages
+						if (msg?.messageStubParameters?.[0] === 'MISSING_SENDER_KEY') {
+							const authorJid = msg.messageStubParameters[1]
+							const groupJid = msg.messageStubParameters[2]
+							
+							// Validate required parameters
+							if (!authorJid || !groupJid) {
+								logger.error({ authorJid, groupJid }, 'Missing required parameters for sender key request')
+								return
+							}
+							
+							logger.info({ 
+								groupJid, 
+								authorJid, 
+								messageKey: msg.key 
+							}, 'Requesting SenderKeyDistributionMessage from author')
+							
+							try {
+								// Create and send a message asking for sender key distribution
+								const meId = authState.creds.me?.id
+								if (!meId) {
+									throw new Error('No authenticated user ID available')
+								}
+								
+								// Generate a SenderKeyDistributionMessage to include with our request
+								const { senderKeyDistributionMessage } = await signalRepository.encryptGroupMessage({
+									group: groupJid,
+									data: new Uint8Array(1), // Minimal data
+									meId
+								})
+								
+								// Send our sender key distribution message to the author
+								const senderKeyMsg = {
+									senderKeyDistributionMessage: {
+										groupId: groupJid,
+										axolotlSenderKeyDistributionMessage: senderKeyDistributionMessage
+									}
+								}
+								
+								await sendNode({
+									tag: 'message',
+									attrs: {
+										to: authorJid,
+										type: 'text',
+										id: generateMessageIDV2()
+									},
+									content: [
+										{
+											tag: 'enc',
+											attrs: { type: 'skmsg' },
+											content: Buffer.from(encodeWAMessage(senderKeyMsg))
+										}
+									]
+								})
+								
+								logger.debug({ authorJid, groupJid }, 'Sent SenderKeyDistributionMessage request to author')
+								
+								// Also request the original message from phone companion with session context
+								await requestPlaceholderResend(msg.key, {
+									missingSession: true,
+									participantJid: authorJid,
+									groupJid: groupJid,
+									errorType: 'missing_sender_key'
+								})
+								logger.debug({ messageKey: msg.key, authorJid, groupJid }, 'Requested message resend from phone companion with session context')
+								
+							} catch (reqErr) {
+								logger.error({ authorJid, groupJid, err: reqErr }, 'Failed to request sender key distribution')
+								
+								// Fallback: Use comprehensive session recovery
+								logger.info({ authorJid, groupJid }, 'Attempting comprehensive session recovery')
+								await handleSessionRecovery(msg.key, { message: 'Failed sender key distribution' })
+							}
+							
+							// Continue with retry mechanism as backup
+						}
 
 						retryMutex.mutex(async () => {
 							if (ws.isOpen) {
@@ -917,42 +1013,215 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return sendPeerDataOperationMessage(pdoMessage)
 	}
 
-	const requestPlaceholderResend = async (messageKey: WAMessageKey): Promise<string | undefined> => {
+	const requestPlaceholderResend = async (messageKey: WAMessageKey, options?: {
+		missingSession?: boolean
+		participantJid?: string
+		groupJid?: string
+		errorType?: string
+	}): Promise<string | undefined> => {
 		if (!authState.creds.me?.id) {
 			throw new Boom('Not authenticated')
 		}
 
-		if (placeholderResendCache.get(messageKey?.id!)) {
-			logger.debug({ messageKey }, 'already requested resend')
+		const cacheKey = `${messageKey?.id!}_${options?.participantJid || 'default'}`
+		if (placeholderResendCache.get(cacheKey)) {
+			logger.debug({ messageKey, options }, 'already requested resend for this message+participant')
 			return
 		} else {
-			placeholderResendCache.set(messageKey?.id!, true)
+			placeholderResendCache.set(cacheKey, true)
 		}
 
-		await delay(5000)
+		// Shorter delay for session-related issues since they're more urgent
+		const delayTime = options?.missingSession ? 2000 : 5000
+		await delay(delayTime)
 
-		if (!placeholderResendCache.get(messageKey?.id!)) {
+		if (!placeholderResendCache.get(cacheKey)) {
 			logger.debug({ messageKey }, 'message received while resend requested')
 			return 'RESOLVED'
 		}
 
-		const pdoMessage = {
+		// Enhanced PDO message with session context
+		const pdoMessage: any = {
 			placeholderMessageResendRequest: [
 				{
-					messageKey
+					messageKey,
+					// Include session context when available
+					...(options?.missingSession && {
+						sessionContext: {
+							missingSession: true,
+							participantJid: options.participantJid,
+							groupJid: options.groupJid,
+							errorType: options.errorType || 'session_required'
+						}
+					})
 				}
 			],
 			peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
 		}
 
+		logger.debug({ messageKey, options }, 'Sending enhanced PDO request with session context')
+
+		// Longer timeout for session establishment
+		const timeoutMs = options?.missingSession ? 30_000 : 15_000
 		setTimeout(() => {
-			if (placeholderResendCache.get(messageKey?.id!)) {
-				logger.debug({ messageKey }, 'PDO message without response after 15 seconds. Phone possibly offline')
-				placeholderResendCache.del(messageKey?.id!)
+			if (placeholderResendCache.get(cacheKey)) {
+				logger.debug({ messageKey, timeoutMs }, 'PDO message without response after timeout. Phone possibly offline')
+				placeholderResendCache.del(cacheKey)
 			}
-		}, 15_000)
+		}, timeoutMs)
 
 		return sendPeerDataOperationMessage(pdoMessage)
+	}
+
+	const requestSessionEstablishment = async (participantJid: string, groupJid?: string): Promise<boolean> => {
+		logger.info({ participantJid, groupJid }, 'Requesting session establishment for participant')
+		
+		try {
+			// Method 1: Use assertSessions to force session establishment
+			await assertSessions([participantJid], true)
+			logger.debug({ participantJid }, 'Session establishment attempted via assertSessions')
+			
+			// Method 2: Send a PDO request specifically for session establishment
+			const sessionPDOMessage = {
+				sessionEstablishmentRequest: [{
+					participantJid,
+					groupJid
+				}],
+				peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
+			}
+			
+			await sendPeerDataOperationMessage(sessionPDOMessage)
+			logger.debug({ participantJid, groupJid }, 'Sent session establishment PDO request')
+			
+			// Method 3: Request PreKey bundle from the phone companion
+			const preKeyRequest = {
+				preKeyBundleRequest: [{
+					jid: participantJid,
+					reason: 'missing_session'
+				}],
+				peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
+			}
+			
+			await sendPeerDataOperationMessage(preKeyRequest)
+			logger.debug({ participantJid }, 'Sent PreKey bundle request')
+			
+			return true
+		} catch (error) {
+			logger.error({ participantJid, groupJid, error }, 'Failed to request session establishment')
+			return false
+		}
+	}
+
+	const handleSessionRecovery = async (messageKey: WAMessageKey, error: any): Promise<boolean> => {
+		const { remoteJid, participant, id } = messageKey
+		const isGroup = isJidGroup(remoteJid!)
+		
+		logger.info({ messageKey, errorMessage: error.message, isGroup }, 'Starting comprehensive session recovery')
+		
+		if (!isGroup || !participant) {
+			logger.debug({ messageKey }, 'Skipping session recovery for non-group message or missing participant')
+			return false
+		}
+		
+		const recoverySteps = [
+			{
+				name: 'Enhanced PDO Request',
+				action: async () => {
+					return await requestPlaceholderResend(messageKey, {
+						missingSession: true,
+						participantJid: participant,
+						groupJid: remoteJid!,
+						errorType: 'session_recovery'
+					})
+				}
+			},
+			{
+				name: 'Session Establishment',
+				action: async () => {
+					return await requestSessionEstablishment(participant, remoteJid!)
+				}
+			},
+			{
+				name: 'Sender Key Distribution',
+				action: async () => {
+					try {
+						const meId = authState.creds.me?.id
+						if (!meId) throw new Error('No authenticated user ID')
+						
+						const { senderKeyDistributionMessage } = await signalRepository.encryptGroupMessage({
+							group: remoteJid!,
+							data: new Uint8Array(1),
+							meId
+						})
+						
+						const senderKeyMsg = {
+							senderKeyDistributionMessage: {
+								groupId: remoteJid!,
+								axolotlSenderKeyDistributionMessage: senderKeyDistributionMessage
+							}
+						}
+						
+						await sendNode({
+							tag: 'message',
+							attrs: {
+								to: participant,
+								type: 'text',
+								id: generateMessageIDV2()
+							},
+							content: [{
+								tag: 'enc',
+								attrs: { type: 'skmsg' },
+								content: Buffer.from(encodeWAMessage(senderKeyMsg))
+							}]
+						})
+						
+						return 'sender_key_sent'
+					} catch (err) {
+						logger.error({ err }, 'Failed to send sender key distribution in recovery')
+						return false
+					}
+				}
+			},
+			{
+				name: 'Force Key Refresh',
+				action: async () => {
+					try {
+						// Clear the sender key memory for this group to force refresh
+						await authState.keys.set({ 'sender-key-memory': { [remoteJid!]: null } })
+						// Force session regeneration
+						await assertSessions([participant], true)
+						logger.debug({ participant, groupJid: remoteJid }, 'Forced key refresh completed')
+						return true
+					} catch (err) {
+						logger.error({ err }, 'Failed to force key refresh')
+						return false
+					}
+				}
+			}
+		]
+		
+		let recoverySuccess = false
+		for (const step of recoverySteps) {
+			try {
+				logger.debug({ step: step.name, messageKey }, 'Executing recovery step')
+				const result = await step.action()
+				if (result) {
+					logger.info({ step: step.name, result, messageKey }, 'Recovery step succeeded')
+					recoverySuccess = true
+					// Wait a bit between steps to avoid overwhelming the system
+					await delay(1000)
+				}
+			} catch (err) {
+				logger.error({ step: step.name, err, messageKey }, 'Recovery step failed')
+			}
+		}
+		
+		if (recoverySuccess) {
+			logger.info({ messageKey }, 'Session recovery completed, waiting for key propagation')
+			await delay(3000) // Wait for keys to propagate
+		}
+		
+		return recoverySuccess
 	}
 
 	const handleCall = async (node: BinaryNode) => {
