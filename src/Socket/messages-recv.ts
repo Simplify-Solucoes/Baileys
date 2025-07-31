@@ -195,19 +195,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (retryCount === 1) {
 			logger.debug({ msgKey, isGroup: isJidGroup(msgKey.remoteJid!) }, 'requesting message from phone companion (enhanced whatsmeow approach)')
 			
-			// Check if this is a message from our own device
-			const meId = authState.creds.me?.id
-			const { user: meUser } = meId ? jidDecode(meId)! : { user: null }
-			const { user: participantUser } = msgKey.participant ? jidDecode(msgKey.participant)! : { user: null }
-			const isOwnDevice = participantUser === meUser && msgKey.participant !== undefined
-			
-			if (isOwnDevice) {
-				logger.info({ msgKey, participant: msgKey.participant }, 'Skipping PDO request for own device to avoid Error 479')
-				// Don't send PDO requests for own devices
-				// The local sender key copying in libsignal.ts will handle it
-				return
-			}
-			
 			// For 1-to-1 chats, force immediate session reset to fix session sync issues
 			if (!isJidGroup(msgKey.remoteJid!)) {
 				logger.debug({ msgKey }, 'forcing immediate session reset for 1-to-1 chat')
@@ -896,26 +883,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							}, 'Requesting SenderKeyDistributionMessage from author')
 							
 							try {
-								// For own devices, skip all network requests to avoid Error 479
+								// For own devices, prioritize phone companion requests over direct messaging
 								if (isOwnDevice) {
-									logger.info({ authorJid, groupJid }, 'Detected cross-device sender key sync issue - relying on local key copying only')
+									logger.info({ authorJid, groupJid }, 'Detected cross-device sender key sync issue - using enhanced PDO approach')
 									
-									// The sender key copying already happened in libsignal.ts decryptGroupMessage
-									// If it failed, we'll retry through the normal retry mechanism
-									// DO NOT send PDO requests or any network messages to own devices
-									
-									logger.info({ authorJid, groupJid }, 'Skipping network requests for own device to avoid Error 479')
-									
-									// Just trigger a retry which will attempt local key copying again
-									retryMutex.mutex(async () => {
-										if (ws.isOpen) {
-											await sendRetryRequest(node, false)
-											if (retryRequestDelayMs) {
-												await delay(retryRequestDelayMs)
-											}
-										}
+									// First, request the message from phone companion with aggressive settings
+									const pdoResult = await requestPlaceholderResend(msg.key, {
+										missingSession: true,
+										participantJid: authorJid,
+										groupJid: groupJid,
+										errorType: 'cross_device_sender_key'
 									})
+									logger.info({ pdoResult, authorJid, groupJid }, 'Sent cross-device PDO request for sender key sync')
 									
+									// Also trigger session recovery specifically for own device
+									await handleSessionRecovery(msg.key, { message: 'Cross-device sender key sync' })
+									
+									// Skip direct message sending to avoid Error 479 for own devices
 									return
 								}
 								
