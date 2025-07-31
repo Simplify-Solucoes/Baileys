@@ -199,14 +199,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const meId = authState.creds.me?.id
 			const { user: meUser } = meId ? jidDecode(meId)! : { user: null }
 			const { user: participantUser } = msgKey.participant ? jidDecode(msgKey.participant)! : { user: null }
-			const isOwnDevice = participantUser === meUser && msgKey.participant !== undefined
+			// const isOwnDevice = participantUser === meUser && msgKey.participant !== undefined
 			
-			if (isOwnDevice) {
-				logger.info({ msgKey, participant: msgKey.participant }, 'Skipping PDO request for own device to avoid Error 479')
-				// Don't send PDO requests for own devices
-				// The local sender key copying in libsignal.ts will handle it
-				return
-			}
+			// if (isOwnDevice) {
+			// 	logger.info({ msgKey, participant: msgKey.participant }, 'Skipping PDO request for own device to avoid Error 479')
+			// 	// Don't send PDO requests for own devices
+			// 	// The local sender key copying in libsignal.ts will handle it
+			// 	return
+			// }
 			
 			// For 1-to-1 chats, force immediate session reset to fix session sync issues
 			if (!isJidGroup(msgKey.remoteJid!)) {
@@ -897,27 +897,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							
 							try {
 								// For own devices, skip all network requests to avoid Error 479
-								if (isOwnDevice) {
-									logger.info({ authorJid, groupJid }, 'Detected cross-device sender key sync issue - relying on local key copying only')
+								// if (isOwnDevice) {
+								// 	logger.info({ authorJid, groupJid }, 'Detected cross-device sender key sync issue - relying on local key copying only')
 									
-									// The sender key copying already happened in libsignal.ts decryptGroupMessage
-									// If it failed, we'll retry through the normal retry mechanism
-									// DO NOT send PDO requests or any network messages to own devices
+								// 	// The sender key copying already happened in libsignal.ts decryptGroupMessage
+								// 	// If it failed, we'll retry through the normal retry mechanism
+								// 	// DO NOT send PDO requests or any network messages to own devices
 									
-									logger.info({ authorJid, groupJid }, 'Skipping all network requests for own device to avoid Error 479')
+								// 	logger.info({ authorJid, groupJid }, 'Skipping all network requests for own device to avoid Error 479')
 									
-									// Just trigger a retry which will attempt local key copying again
-									retryMutex.mutex(async () => {
-										if (ws.isOpen) {
-											await sendRetryRequest(node, false)
-											if (retryRequestDelayMs) {
-												await delay(retryRequestDelayMs)
-											}
-										}
-									})
+								// 	// Just trigger a retry which will attempt local key copying again
+								// 	retryMutex.mutex(async () => {
+								// 		if (ws.isOpen) {
+								// 			await sendRetryRequest(node, false)
+								// 			if (retryRequestDelayMs) {
+								// 				await delay(retryRequestDelayMs)
+								// 			}
+								// 		}
+								// 	})
 									
-									return
-								}
+								// 	return
+								// }
 								
 								// For other participants, continue with direct message approach
 								const meId = authState.creds.me?.id
