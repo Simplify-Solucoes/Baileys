@@ -199,14 +199,29 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const meId = authState.creds.me?.id
 			const { user: meUser } = meId ? jidDecode(meId)! : { user: null }
 			const { user: participantUser } = msgKey.participant ? jidDecode(msgKey.participant)! : { user: null }
-			// const isOwnDevice = participantUser === meUser && msgKey.participant !== undefined
+			const isOwnDevice = participantUser === meUser && msgKey.participant !== undefined
 			
-			// if (isOwnDevice) {
-			// 	logger.info({ msgKey, participant: msgKey.participant }, 'Skipping PDO request for own device to avoid Error 479')
-			// 	// Don't send PDO requests for own devices
-			// 	// The local sender key copying in libsignal.ts will handle it
-			// 	return
-			// }
+			if (isOwnDevice) {
+				logger.info({ msgKey, participant: msgKey.participant }, 'Own device detected - using enhanced retry for cross-device sync')
+				// For own devices, use retry logic instead of PDO requests to avoid Error 479
+				// This allows the local sender key copying in libsignal.ts to work
+				
+				if (retryCount === 0) {
+					// First retry - let local key copying handle it
+					logger.debug({ msgKey }, 'First retry for own device - relying on local key copying')
+					return
+				} else if (retryCount === 1) {
+					// Second retry - force a session reset for 1-to-1 chats only
+					if (!isJidGroup(msgKey.remoteJid!)) {
+						logger.debug({ msgKey }, 'Second retry for own device 1-to-1 chat - forcing session reset')
+						forceIncludeKeys = true
+					} else {
+						logger.debug({ msgKey }, 'Second retry for own device group - still avoiding PDO request')
+						return
+					}
+				}
+				// For retry count > 1, continue with normal PDO logic but be prepared for Error 479
+			}
 			
 			// For 1-to-1 chats, force immediate session reset to fix session sync issues
 			if (!isJidGroup(msgKey.remoteJid!)) {
@@ -807,6 +822,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const handleMessage = async (node: BinaryNode) => {
 		console.debug(`[handleMessage] Received message node from ${node.attrs.from}, id: ${node.attrs.id}`)
+		
+		// Track retry attempts for cross-device sync
+		const retryCounters = new Map<string, number>()
+		
 		if (shouldIgnoreJid(node.attrs.from!) && node.attrs.from !== '@s.whatsapp.net') {
 			logger.debug({ key: node.attrs.key }, 'ignored message')
 			await sendMessageAck(node)
@@ -896,28 +915,38 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							}, 'Requesting SenderKeyDistributionMessage from author')
 							
 							try {
-								// For own devices, skip all network requests to avoid Error 479
-								// if (isOwnDevice) {
-								// 	logger.info({ authorJid, groupJid }, 'Detected cross-device sender key sync issue - relying on local key copying only')
+								// For own devices, use enhanced retry logic to avoid Error 479
+								if (isOwnDevice) {
+									logger.info({ authorJid, groupJid }, 'Detected cross-device sender key sync issue - using enhanced retry logic')
 									
-								// 	// The sender key copying already happened in libsignal.ts decryptGroupMessage
-								// 	// If it failed, we'll retry through the normal retry mechanism
-								// 	// DO NOT send PDO requests or any network messages to own devices
+									// Count retry attempts for this specific message
+									const retryKey = `${groupJid}:${authorJid}:${msg.key.id}`
+									const currentRetries = retryCounters.get(retryKey) || 0
 									
-								// 	logger.info({ authorJid, groupJid }, 'Skipping all network requests for own device to avoid Error 479')
-									
-								// 	// Just trigger a retry which will attempt local key copying again
-								// 	retryMutex.mutex(async () => {
-								// 		if (ws.isOpen) {
-								// 			await sendRetryRequest(node, false)
-								// 			if (retryRequestDelayMs) {
-								// 				await delay(retryRequestDelayMs)
-								// 			}
-								// 		}
-								// 	})
-									
-								// 	return
-								// }
+									if (currentRetries < 2) {
+										// First two attempts: rely on local key copying only
+										logger.info({ authorJid, groupJid, retryCount: currentRetries }, 'Using local key copying for own device')
+										
+										retryCounters.set(retryKey, currentRetries + 1)
+										
+										// Just trigger a retry which will attempt local key copying again
+										retryMutex.mutex(async () => {
+											if (ws.isOpen) {
+												await sendRetryRequest(node, false)
+												if (retryRequestDelayMs) {
+													await delay(retryRequestDelayMs)
+												}
+											}
+										})
+										
+										return
+									} else {
+										// After 2 failed local attempts, log the failure
+										logger.warn({ authorJid, groupJid, retryCount: currentRetries }, 'Local key copying failed for own device - giving up to avoid Error 479')
+										retryCounters.delete(retryKey) // Clean up
+										return
+									}
+								}
 								
 								// For other participants, continue with direct message approach
 								const meId = authState.creds.me?.id
