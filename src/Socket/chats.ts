@@ -969,30 +969,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const upsertMessage = ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType) => {
-		// Don't emit CIPHERTEXT messages unless they're from our own devices
-		if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
-			let isFromOwnDevice = msg.key.fromMe || false
-			
-			// Check if message is from our own user account (different device)
-			if (!isFromOwnDevice) {
-				const authorJid = msg.key.participant || msg.key.remoteJid
-				if (authorJid && authState.creds.me?.id) {
-					const { user: authorUser } = jidDecode(authorJid)!
-					const { user: meUser } = jidDecode(authState.creds.me.id)!
-					// Compare only the phone number part (before colon)
-					const authorPhone = authorUser.split(':')[0]
-					const mePhone = meUser.split(':')[0]
-					isFromOwnDevice = authorPhone === mePhone
-				}
-			}
-			
-			if (!isFromOwnDevice) {
-				console.debug(`Skipping CIPHERTEXT message from ${msg.key.participant || msg.key.remoteJid} - failed decryption`)
-				return
-			}
-			console.debug(`Emitting CIPHERTEXT message from own device ${msg.key.participant || msg.key.remoteJid}`)
-		}
-		
 		ev.emit('messages.upsert', { messages: [msg], type })
 
 		if (!!msg.pushName) {
