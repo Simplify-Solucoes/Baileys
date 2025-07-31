@@ -1080,26 +1080,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return 'RESOLVED'
 		}
 
-		// Enhanced PDO message with session context
-		const pdoMessage: any = {
+		// Standard PDO message - only messageKey is valid per protocol
+		const pdoMessage: proto.Message.IPeerDataOperationRequestMessage = {
 			placeholderMessageResendRequest: [
 				{
-					messageKey,
-					// Include session context when available
-					...(options?.missingSession && {
-						sessionContext: {
-							missingSession: true,
-							participantJid: options.participantJid,
-							groupJid: options.groupJid,
-							errorType: options.errorType || 'session_required'
-						}
-					})
+					messageKey
 				}
 			],
 			peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
 		}
 
-		logger.info({ messageKey, options, pdoMessage }, 'Sending enhanced PDO request with session context')
+		logger.info({ messageKey, options }, 'Sending standard PDO placeholder message resend request')
 
 		// Longer timeout for session establishment
 		const timeoutMs = options?.missingSession ? 30_000 : 15_000
@@ -1121,159 +1112,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const syncOwnDeviceSenderKeys = async (): Promise<void> => {
-		logger.info('Starting comprehensive sender key sync for own devices')
-		
-		try {
-			const meId = authState.creds.me?.id
-			if (!meId) {
-				logger.warn('No authenticated user ID for sender key sync')
-				return
-			}
-			
-			const { user: meUser } = jidDecode(meId)!
-			const allSenderKeys = await authState.keys.get('sender-key', [])
-			const senderKeyCount = Object.keys(allSenderKeys || {}).length
-			
-			logger.info({ senderKeyCount, meId }, 'Current sender key inventory')
-			
-			// If we have no sender keys at all, request sync from phone companion
-			if (senderKeyCount === 0) {
-				logger.info('No sender keys found - requesting initial sync from phone companion')
-				
-				try {
-					// Send a general PDO request to sync all sender keys
-					const syncPDOMessage = {
-						senderKeySyncRequest: {
-							requestType: 'INITIAL_SYNC',
-							userId: meUser
-						},
-						peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
-					}
-					
-					const result = await sendPeerDataOperationMessage(syncPDOMessage)
-					logger.info({ result }, 'Sent initial sender key sync request to phone companion')
-					
-					// Also request specific sync for active groups if available
-					logger.debug('Initial sender key sync request sent - will sync on-demand when group messages arrive')
-					
-				} catch (pdoError) {
-					logger.error({ error: pdoError }, 'Failed to request initial sender key sync from phone companion')
-				}
-				
-				return
-			}
-			
-			// If we have some sender keys, try local cross-device sync
-			const senderKeysByGroup: { [groupId: string]: string[] } = {}
-			
-			// Organize sender keys by group
-			for (const senderKeyName of Object.keys(allSenderKeys || {})) {
-				const match = senderKeyName.match(/^(.+?)::(.+?)::(.+)$/)
-				if (match && match.length >= 4) {
-					const [, groupId, user] = match
-					if (groupId && user && user === meUser) {
-						if (!senderKeysByGroup[groupId]) {
-							senderKeysByGroup[groupId] = []
-						}
-						senderKeysByGroup[groupId].push(senderKeyName)
-					}
-				}
-			}
-			
-			logger.info({ groupCount: Object.keys(senderKeysByGroup).length }, 'Found sender keys for groups')
-			
-			// For each group, check if we have sender keys for all our devices
-			for (const [groupId, senderKeys] of Object.entries(senderKeysByGroup)) {
-				if (senderKeys.length >= 1) {
-					logger.debug({ groupId, senderKeysCount: senderKeys.length }, 'Checking sender key coverage for group')
-					
-					// Check if current device is missing sender key
-					const currentDeviceKey = senderKeys.find(key => key.includes(meId))
-					if (!currentDeviceKey) {
-						logger.info({ groupId, availableKeys: senderKeys }, 'Current device missing sender key - attempting local sync')
-						
-						// Try to copy from first available device
-						const sourceKey = senderKeys[0]
-						const targetKey = `${groupId}::${meId}`
-						
-						if (!sourceKey || typeof sourceKey !== 'string' || !targetKey) {
-							logger.warn({ sourceKey, targetKey }, 'Invalid key names for sender key sync')
-							continue
-						}
-						
-						try {
-							const { [sourceKey]: sourceData } = await authState.keys.get('sender-key', [sourceKey])
-							if (sourceData) {
-								await authState.keys.set({ 
-									'sender-key': { 
-										[targetKey]: sourceData 
-									} 
-								})
-								logger.info({ sourceKey, targetKey }, 'Successfully synced sender key between own devices')
-							}
-						} catch (syncError) {
-							logger.error({ sourceKey, targetKey, error: syncError }, 'Failed to sync sender key between own devices')
-							
-							// Fallback: Request from phone companion for this specific group
-							try {
-								const groupSyncPDO = {
-									senderKeySyncRequest: {
-										requestType: 'GROUP_SYNC',
-										groupId: groupId,
-										userId: meUser
-									},
-									peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
-								}
-								
-								await sendPeerDataOperationMessage(groupSyncPDO)
-								logger.info({ groupId }, 'Requested group-specific sender key sync from phone companion')
-							} catch (groupPdoError) {
-								logger.error({ groupId, error: groupPdoError }, 'Failed to request group sender key sync')
-							}
-						}
-					} else {
-						logger.debug({ groupId }, 'Current device already has sender key for group')
-					}
-				}
-			}
-			
-		} catch (error) {
-			logger.error({ error }, 'Error during comprehensive sender key sync')
-		}
-	}
-
 	const requestSessionEstablishment = async (participantJid: string, groupJid?: string): Promise<boolean> => {
 		logger.info({ participantJid, groupJid }, 'Requesting session establishment for participant')
 		
 		try {
-			// Method 1: Use assertSessions to force session establishment
+			// Use assertSessions to force session establishment
 			await assertSessions([participantJid], true)
 			logger.debug({ participantJid }, 'Session establishment attempted via assertSessions')
 			
-			// Method 2: Send a PDO request specifically for session establishment
-			const sessionPDOMessage = {
-				sessionEstablishmentRequest: [{
+			// Use standard placeholder resend which will be handled by the phone companion
+			if (groupJid) {
+				const messageKey: WAMessageKey = {
+					remoteJid: groupJid,
+					fromMe: false,
+					id: generateMessageIDV2(),
+					participant: participantJid
+				}
+				
+				await requestPlaceholderResend(messageKey, {
+					missingSession: true,
 					participantJid,
-					groupJid
-				}],
-				peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
+					groupJid,
+					errorType: 'session_establishment'
+				})
+				logger.debug({ participantJid, groupJid }, 'Sent session establishment request via placeholder resend')
 			}
-			
-			await sendPeerDataOperationMessage(sessionPDOMessage)
-			logger.debug({ participantJid, groupJid }, 'Sent session establishment PDO request')
-			
-			// Method 3: Request PreKey bundle from the phone companion
-			const preKeyRequest = {
-				preKeyBundleRequest: [{
-					jid: participantJid,
-					reason: 'missing_session'
-				}],
-				peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
-			}
-			
-			await sendPeerDataOperationMessage(preKeyRequest)
-			logger.debug({ participantJid }, 'Sent PreKey bundle request')
 			
 			return true
 		} catch (error) {
@@ -1770,7 +1633,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		sendRetryRequest,
 		rejectCall,
 		fetchMessageHistory,
-		requestPlaceholderResend,
-		syncOwnDeviceSenderKeys
+		requestPlaceholderResend
 	}
 }
