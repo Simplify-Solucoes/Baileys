@@ -1079,19 +1079,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			throw new Boom('Not authenticated')
 		}
 
-		const cacheKey = `${messageKey?.id!}_${options?.participantJid || 'default'}`
-		if (placeholderResendCache.get(cacheKey)) {
+		//const cacheKey = `${messageKey?.id!}_${options?.participantJid || 'default'}`
+		if (placeholderResendCache.get(messageKey?.id!)) {
 			logger.debug({ messageKey, options }, 'already requested resend for this message+participant')
 			return
 		} else {
-			placeholderResendCache.set(cacheKey, true)
+			placeholderResendCache.set(messageKey?.id!, true)
 		}
 
 		// Shorter delay for session-related issues since they're more urgent
 		const delayTime = options?.missingSession ? 2000 : 5000
 		await delay(delayTime)
 
-		if (!placeholderResendCache.get(cacheKey)) {
+		if (!placeholderResendCache.get(messageKey?.id!)) {
 			logger.debug({ messageKey }, 'message received while resend requested')
 			return 'RESOLVED'
 		}
@@ -1111,9 +1111,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// Longer timeout for session establishment
 		const timeoutMs = options?.missingSession ? 30_000 : 15_000
 		setTimeout(() => {
-			if (placeholderResendCache.get(cacheKey)) {
-				logger.warn({ messageKey, timeoutMs, cacheKey }, 'PDO message without response after timeout. Phone possibly offline')
-				placeholderResendCache.del(cacheKey)
+			if (placeholderResendCache.get(messageKey?.id!)) {
+				logger.warn({ messageKey, timeoutMs, messageKey?.id! }, 'PDO message without response after timeout. Phone possibly offline')
+				placeholderResendCache.del(messageKey?.id!)
 			}
 		}, timeoutMs)
 
@@ -1123,7 +1123,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return result
 		} catch (pdoError) {
 			logger.error({ messageKey, options, error: pdoError }, 'Failed to send PDO message')
-			placeholderResendCache.del(cacheKey)
+			placeholderResendCache.del(messageKey?.id!)
 			throw pdoError
 		}
 	}
