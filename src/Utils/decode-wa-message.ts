@@ -232,12 +232,16 @@ export const decryptMessageNode = (
 						logger.error({ key: fullMessage.key, err }, 'failed to decrypt message')
 						
 						// Check if this is a group message decryption failure due to missing session/sender keys
-						// The error comes from libsignal as "session required" when trying to decrypt group messages
+						// The error comes from libsignal as "session required" or "No session record" when trying to decrypt group messages
 						const e2eType = tag === 'plaintext' ? 'plaintext' : attrs.type
 						if (e2eType === 'skmsg' && (
 							err.message?.includes('session required') || 
 							err.message?.includes('No sender key found') ||
-							err.stack?.includes('SessionCipher.doDecryptWhisperMessage')
+							err.message?.includes('No session record') ||
+							err.type === 'SessionError' ||
+							err.name === 'SessionError' ||
+							err.stack?.includes('SessionCipher.doDecryptWhisperMessage') ||
+							err.stack?.includes('SessionCipher.processdecryptWhisperMessage')
 						)) {
 							logger.info({ 
 								groupId: sender, 

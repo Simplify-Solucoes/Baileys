@@ -895,12 +895,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									}
 								}
 								
+								const messageId = generateMessageIDV2()
+								logger.debug({ authorJid, groupJid, messageId }, 'Sending SenderKeyDistributionMessage to author')
+								
 								await sendNode({
 									tag: 'message',
 									attrs: {
 										to: authorJid,
 										type: 'text',
-										id: generateMessageIDV2()
+										id: messageId
 									},
 									content: [
 										{
@@ -911,16 +914,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									]
 								})
 								
+								logger.info({ authorJid, groupJid, messageId }, 'SenderKeyDistributionMessage sent, waiting for ACK')
+								
 								logger.debug({ authorJid, groupJid }, 'Sent SenderKeyDistributionMessage request to author')
 								
 								// Also request the original message from phone companion with session context
-								await requestPlaceholderResend(msg.key, {
+								const pdoResult = await requestPlaceholderResend(msg.key, {
 									missingSession: true,
 									participantJid: authorJid,
 									groupJid: groupJid,
 									errorType: 'missing_sender_key'
 								})
-								logger.debug({ messageKey: msg.key, authorJid, groupJid }, 'Requested message resend from phone companion with session context')
+								logger.info({ messageKey: msg.key, authorJid, groupJid, pdoResult }, 'Requested message resend from phone companion with session context')
+								
+								// Also force a retry request to ensure the enhanced PDO logic is triggered
+								if (ws.isOpen) {
+									logger.info({ messageKey: msg.key }, 'Forcing retry request to trigger enhanced PDO system')
+									await sendRetryRequest(node, false)
+								}
 								
 							} catch (reqErr) {
 								logger.error({ authorJid, groupJid, err: reqErr }, 'Failed to request sender key distribution')
@@ -1059,18 +1070,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
 		}
 
-		logger.debug({ messageKey, options }, 'Sending enhanced PDO request with session context')
+		logger.info({ messageKey, options, pdoMessage }, 'Sending enhanced PDO request with session context')
 
 		// Longer timeout for session establishment
 		const timeoutMs = options?.missingSession ? 30_000 : 15_000
 		setTimeout(() => {
 			if (placeholderResendCache.get(cacheKey)) {
-				logger.debug({ messageKey, timeoutMs }, 'PDO message without response after timeout. Phone possibly offline')
+				logger.warn({ messageKey, timeoutMs, cacheKey }, 'PDO message without response after timeout. Phone possibly offline')
 				placeholderResendCache.del(cacheKey)
 			}
 		}, timeoutMs)
 
-		return sendPeerDataOperationMessage(pdoMessage)
+		try {
+			const result = await sendPeerDataOperationMessage(pdoMessage)
+			logger.info({ messageKey, options, result }, 'PDO message sent successfully')
+			return result
+		} catch (pdoError) {
+			logger.error({ messageKey, options, error: pdoError }, 'Failed to send PDO message')
+			placeholderResendCache.del(cacheKey)
+			throw pdoError
+		}
 	}
 
 	const requestSessionEstablishment = async (participantJid: string, groupJid?: string): Promise<boolean> => {
