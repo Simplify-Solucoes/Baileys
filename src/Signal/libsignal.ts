@@ -268,7 +268,7 @@ function signalStorage({ creds, keys }: SignalAuthState): StorageType & SenderKe
 					}
 				}
 			}
-			throw new Error(`PreKey ${keyId} not found`)
+			return null
 		},
 		removePreKey: async (keyId: number) => {
 			return keys.set({ 'pre-key': { [keyId]: null } })
