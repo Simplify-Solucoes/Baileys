@@ -273,17 +273,61 @@ export const makeSocket = (config: SocketConfig) => {
 		return +countChild.attrs.value!
 	}
 
+	// Deduplication for concurrent pre-key uploads (separate contexts)
+	let uploadPreKeysPromise: Promise<void> | null = null
+	let errorTriggeredUploadPromise: Promise<void> | null = null
+	
 	/** generates and uploads a set of pre-keys to the server */
-	const uploadPreKeys = async (count = INITIAL_PREKEY_COUNT) => {
-		await keys.transaction(async () => {
-			logger.info({ count }, 'uploading pre-keys')
-			const { update, node } = await getNextPreKeysNode({ creds, keys }, count)
-
-			await query(node)
-			ev.emit('creds.update', update)
-
-			logger.info({ count }, 'uploaded pre-keys')
-		})
+	const uploadPreKeys = async (count = INITIAL_PREKEY_COUNT, isErrorTriggered = false) => {
+		// Use different deduplication contexts for different purposes
+		const contextPromise = isErrorTriggered ? errorTriggeredUploadPromise : uploadPreKeysPromise
+		
+		// Prevent multiple concurrent uploads in the same context
+		if (contextPromise) {
+			logger.debug(`Pre-key upload already in progress (${isErrorTriggered ? 'error-triggered' : 'normal'}), waiting for completion`)
+			return contextPromise
+		}
+		
+		const uploadPromise = (async () => {
+			logger.info({ count, isErrorTriggered }, 'uploading pre-keys')
+			
+			// Generate and save pre-keys atomically (prevents ID collisions on retry)
+			const node = await keys.transaction(async () => {
+				const { update, node } = await getNextPreKeysNode({ creds, keys }, count)
+				// Update credentials immediately to prevent duplicate IDs on retry
+				ev.emit('creds.update', update)
+				return node // Only return node since update is already used
+			})
+			
+			// Upload to server (outside transaction, can fail without affecting local keys)
+			try {
+				await query(node)
+				logger.info({ count, isErrorTriggered }, 'uploaded pre-keys successfully')
+			} catch (uploadError) {
+				logger.error({ uploadError, count, isErrorTriggered }, 'Failed to upload pre-keys to server')
+				// Pre-keys are saved locally and credentials updated, preventing ID collisions on retry
+				// Server just doesn't have these specific keys, but that's recoverable
+				throw uploadError
+			}
+		})()
+		
+		// Store in appropriate context
+		if (isErrorTriggered) {
+			errorTriggeredUploadPromise = uploadPromise
+		} else {
+			uploadPreKeysPromise = uploadPromise
+		}
+		
+		try {
+			await uploadPromise
+		} finally {
+			// Clear the promise after completion (success or failure)
+			if (isErrorTriggered) {
+				errorTriggeredUploadPromise = null
+			} else {
+				uploadPreKeysPromise = null
+			}
+		}
 	}
 
 	const verifyCurrentPreKeyExists = async () => {

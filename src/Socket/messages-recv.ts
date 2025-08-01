@@ -848,30 +848,60 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 						// Check if the error is related to missing pre-keys
 						const errorMessage = msg?.messageStubParameters?.[0] || ''
-						if (errorMessage.includes('PreKey') && errorMessage.includes('not found')) {
-							logger.info({ error: errorMessage }, 'PreKey not found error detected, uploading new pre-keys')
-							// Upload a smaller batch of pre-keys for quick recovery (10 instead of default 30)
-							uploadPreKeys(10).catch(err => {
-								logger.error({ err }, 'Failed to upload pre-keys after PreKey not found error')
-							})
-						}
+						const isPreKeyError = errorMessage.includes('PreKey') && errorMessage.includes('not found')
 
 						console.debug(`[handleMessage] Attempting retry request for failed decryption`)
+						
+						// Handle both pre-key and normal retries in single mutex
 						retryMutex.mutex(async () => {
-							if (ws.isOpen) {
-								if (getBinaryNodeChild(node, 'unavailable')) {
-									console.debug(`[handleMessage] Message unavailable, skipping retry`)
+							try {
+								if (!ws.isOpen) {
+									logger.debug({ node }, 'Connection closed, skipping retry')
 									return
 								}
-
+								
+								if (getBinaryNodeChild(node, 'unavailable')) {
+									logger.debug('Message unavailable, skipping retry')
+									return
+								}
+								
+								// Handle pre-key errors with upload and delay
+								if (isPreKeyError) {
+									logger.info({ error: errorMessage }, 'PreKey error detected, uploading and retrying')
+									
+									try {
+										// Upload pre-keys (with built-in deduplication)
+										logger.debug('Uploading pre-keys for error recovery')
+										await uploadPreKeys(10, true) // isErrorTriggered = true
+										
+										// Wait for server to process new pre-keys
+										logger.debug('Waiting for server to process new pre-keys')
+										await delay(3000)
+									} catch (uploadErr) {
+										logger.error({ uploadErr }, 'Pre-key upload failed, proceeding with retry anyway')
+										// Still delay briefly to avoid immediate retry spam
+										await delay(1000)
+									}
+								}
+								
+								// Send retry request (for both pre-key and normal errors)
 								const encNode = getBinaryNodeChild(node, 'enc')
-								console.debug(`[handleMessage] Sending retry request, encNode present: ${!!encNode}`)
+								logger.debug(`Sending retry request, encNode present: ${!!encNode}, preKeyError: ${isPreKeyError}`)
 								await sendRetryRequest(node, !encNode)
+								
 								if (retryRequestDelayMs) {
 									await delay(retryRequestDelayMs)
 								}
-							} else {
-								logger.debug({ node }, 'connection closed, ignoring retry req')
+								
+							} catch (err) {
+								logger.error({ err, isPreKeyError }, 'Failed to handle retry, attempting basic retry')
+								// Still attempt retry even if pre-key upload failed
+								try {
+									const encNode = getBinaryNodeChild(node, 'enc')
+									await sendRetryRequest(node, !encNode)
+								} catch (retryErr) {
+									logger.error({ retryErr }, 'Failed to send retry after error handling')
+								}
 							}
 						})
 					} else {
@@ -911,6 +941,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					console.debug(`[handleMessage] Message upserted successfully`)
 				})
 			])
+		
 		} catch (error) {
 			logger.error({ error, node }, 'error in handling message')
 		}
