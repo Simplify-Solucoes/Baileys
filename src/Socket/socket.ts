@@ -295,14 +295,27 @@ export const makeSocket = (config: SocketConfig) => {
 		const localKeyIds = Object.keys(localPreKeys || {})
 		logger.info(`Local PreKeys available: [${localKeyIds.join(', ')}]`)
 		
-		// Always upload if we have very few keys OR if this might be a restart scenario
-		const shouldUpload = preKeyCount <= MIN_PREKEY_COUNT || localKeyIds.length < MIN_PREKEY_COUNT
+		// Check for various scenarios that require PreKey upload
+		const lowServerCount = preKeyCount <= MIN_PREKEY_COUNT
+		const lowLocalCount = localKeyIds.length < MIN_PREKEY_COUNT
+		
+		// Detect potential desync: if we have local keys but low server count,
+		// or if this is a fresh start (very few local keys but server thinks it has many)
+		const potentialDesync = (localKeyIds.length > 0 && preKeyCount <= MIN_PREKEY_COUNT) || 
+		                       (localKeyIds.length <= 2 && preKeyCount > MIN_PREKEY_COUNT)
+		
+		const shouldUpload = lowServerCount || lowLocalCount || potentialDesync
 		
 		if (shouldUpload) {
-			logger.info(`PreKey count (${preKeyCount}) is below minimum (${MIN_PREKEY_COUNT}) or local keys insufficient, uploading new PreKeys`)
+			const reasons = []
+			if (lowServerCount) reasons.push(`server count low (${preKeyCount})`)
+			if (lowLocalCount) reasons.push(`local count low (${localKeyIds.length})`)
+			if (potentialDesync) reasons.push('potential key desync detected')
+			
+			logger.info(`Uploading PreKeys due to: ${reasons.join(', ')}`)
 			await uploadPreKeys()
 		} else {
-			logger.info(`PreKey count (${preKeyCount}) is sufficient and local keys (${localKeyIds.length}) are adequate`)
+			logger.info(`PreKey sync looks good - Server: ${preKeyCount}, Local: ${localKeyIds.length}`)
 		}
 	}
 
