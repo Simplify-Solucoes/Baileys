@@ -850,8 +850,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						const errorMessage = msg?.messageStubParameters?.[0] || ''
 						if (errorMessage.includes('PreKey') && errorMessage.includes('not found')) {
 							logger.info({ error: errorMessage }, 'PreKey not found error detected, uploading new pre-keys')
-							// Upload pre-keys directly since we know they're missing
-							uploadPreKeys().catch(err => {
+							// Upload a smaller batch of pre-keys for quick recovery (10 instead of default 30)
+							uploadPreKeys(10).catch(err => {
 								logger.error({ err }, 'Failed to upload pre-keys after PreKey not found error')
 							})
 						}
