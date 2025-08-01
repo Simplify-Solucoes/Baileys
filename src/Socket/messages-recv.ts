@@ -167,6 +167,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const { key: msgKey } = fullMessage
 		const msgId = msgKey.id!
 
+		console.debug(`[sendRetryRequest] Starting retry request for message ${msgId} from ${msgKey.remoteJid}`)
+
 		const key = `${msgId}:${msgKey?.participant}`
 		let retryCount = msgRetryCache.get<number>(key) || 0
 		
@@ -182,6 +184,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		retryCount += 1
 		msgRetryCache.set(key, retryCount)
 		
+		console.debug(`[sendRetryRequest] Retry count for ${msgId}: ${retryCount}`)
+		
 		// Match whatsmeow: stop at retry count 5
 		if (retryCount >= 5) {
 			logger.warn({ retryCount, msgId }, 'Not sending any more retry receipts')
@@ -191,8 +195,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// EXACT whatsmeow approach: only request from phone on retry 1
 		if (retryCount === 1) {
+			console.debug(`[sendRetryRequest] First retry attempt, requesting message from phone companion`)
 			logger.debug({ msgKey }, 'requesting message from phone companion (whatsmeow approach)')
 			const phoneResult = await requestPlaceholderResend(msgKey)
+			console.debug(`[sendRetryRequest] Placeholder resend result: ${phoneResult}`)
 			logger.debug(`sendRetryRequest: requested placeholder resend for message ${phoneResult}`)
 			
 			// NO key forcing - let phone companion handle it
@@ -833,17 +839,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					console.debug(`[handleMessage] Decryption complete, stubType: ${msg.messageStubType}`)
 					// message failed to decrypt
 					if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
+						console.debug(`[handleMessage] Message is CIPHERTEXT, stubParameters: ${msg.messageStubParameters}`)
+						
 						if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
+							console.debug(`[handleMessage] Missing keys error, sending NACK`)
 							return sendMessageAck(node, NACK_REASONS.ParsingError)
 						}
 
+						console.debug(`[handleMessage] Attempting retry request for failed decryption`)
 						retryMutex.mutex(async () => {
 							if (ws.isOpen) {
 								if (getBinaryNodeChild(node, 'unavailable')) {
+									console.debug(`[handleMessage] Message unavailable, skipping retry`)
 									return
 								}
 
 								const encNode = getBinaryNodeChild(node, 'enc')
+								console.debug(`[handleMessage] Sending retry request, encNode present: ${!!encNode}`)
 								await sendRetryRequest(node, !encNode)
 								if (retryRequestDelayMs) {
 									await delay(retryRequestDelayMs)
@@ -918,24 +930,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const requestPlaceholderResend = async (messageKey: WAMessageKey): Promise<string | undefined> => {
+		console.debug(`[requestPlaceholderResend] Requesting placeholder resend for message ${messageKey.id} from ${messageKey.remoteJid}`)
+		
 		if (!authState.creds.me?.id) {
 			throw new Boom('Not authenticated')
 		}
 
 		if (placeholderResendCache.get(messageKey?.id!)) {
+			console.debug(`[requestPlaceholderResend] Already requested resend for ${messageKey.id}`)
 			logger.debug({ messageKey }, 'already requested resend')
 			return
 		} else {
 			placeholderResendCache.set(messageKey?.id!, true)
+			console.debug(`[requestPlaceholderResend] Added ${messageKey.id} to placeholder resend cache`)
 		}
 
+		console.debug(`[requestPlaceholderResend] Waiting 5 seconds before sending PDO message`)
 		await delay(5000)
 
 		if (!placeholderResendCache.get(messageKey?.id!)) {
+			console.debug(`[requestPlaceholderResend] Message ${messageKey.id} received while resend was requested`)
 			logger.debug({ messageKey }, 'message received while resend requested')
 			return 'RESOLVED'
 		}
 
+		console.debug(`[requestPlaceholderResend] Sending PDO message for ${messageKey.id}`)
 		const pdoMessage = {
 			placeholderMessageResendRequest: [
 				{
@@ -947,12 +966,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		setTimeout(() => {
 			if (placeholderResendCache.get(messageKey?.id!)) {
+				console.debug(`[requestPlaceholderResend] PDO message for ${messageKey.id} timed out after 15 seconds`)
 				logger.debug({ messageKey }, 'PDO message without response after 15 seconds. Phone possibly offline')
 				placeholderResendCache.del(messageKey?.id!)
 			}
 		}, 15_000)
 
-		return sendPeerDataOperationMessage(pdoMessage)
+		const result = await sendPeerDataOperationMessage(pdoMessage)
+		console.debug(`[requestPlaceholderResend] PDO message sent, result: ${result}`)
+		return result
 	}
 
 	const handleCall = async (node: BinaryNode) => {
