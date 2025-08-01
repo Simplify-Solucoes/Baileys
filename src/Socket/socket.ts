@@ -289,8 +289,20 @@ export const makeSocket = (config: SocketConfig) => {
 	const uploadPreKeysToServerIfRequired = async () => {
 		const preKeyCount = await getAvailablePreKeysOnServer()
 		logger.info(`${preKeyCount} pre-keys found on server`)
-		if (preKeyCount <= MIN_PREKEY_COUNT) {
+		
+		// Get local PreKeys to compare with server
+		const localPreKeys = await keys.get('pre-key', [])
+		const localKeyIds = Object.keys(localPreKeys || {})
+		logger.info(`Local PreKeys available: [${localKeyIds.join(', ')}]`)
+		
+		// Always upload if we have very few keys OR if this might be a restart scenario
+		const shouldUpload = preKeyCount <= MIN_PREKEY_COUNT || localKeyIds.length < MIN_PREKEY_COUNT
+		
+		if (shouldUpload) {
+			logger.info(`PreKey count (${preKeyCount}) is below minimum (${MIN_PREKEY_COUNT}) or local keys insufficient, uploading new PreKeys`)
 			await uploadPreKeys()
+		} else {
+			logger.info(`PreKey count (${preKeyCount}) is sufficient and local keys (${localKeyIds.length}) are adequate`)
 		}
 	}
 
