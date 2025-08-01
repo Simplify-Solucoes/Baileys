@@ -286,36 +286,31 @@ export const makeSocket = (config: SocketConfig) => {
 		})
 	}
 
+	const getLocalPreKeyCount = async () => {
+		const localPreKeys = await keys.get('pre-key', [])
+		return Object.keys(localPreKeys || {}).length
+	}
+
 	const uploadPreKeysToServerIfRequired = async () => {
 		const preKeyCount = await getAvailablePreKeysOnServer()
-		logger.info(`${preKeyCount} pre-keys found on server`)
+		const localPreKeyCount = await getLocalPreKeyCount()
 		
-		// Get local PreKeys to compare with server
-		const localPreKeys = await keys.get('pre-key', [])
-		const localKeyIds = Object.keys(localPreKeys || {})
-		logger.info(`Local PreKeys available: [${localKeyIds.join(', ')}]`)
+		logger.info(`${preKeyCount} pre-keys found on server, ${localPreKeyCount} local pre-keys available`)
 		
-		// Check for various scenarios that require PreKey upload
 		const lowServerCount = preKeyCount <= MIN_PREKEY_COUNT
-		const lowLocalCount = localKeyIds.length < MIN_PREKEY_COUNT
+		const countMismatch = localPreKeyCount !== preKeyCount
 		
-		// Detect potential desync: if we have local keys but low server count,
-		// or if this is a fresh start (very few local keys but server thinks it has many)
-		const potentialDesync = (localKeyIds.length > 0 && preKeyCount <= MIN_PREKEY_COUNT) || 
-		                       (localKeyIds.length <= 2 && preKeyCount > MIN_PREKEY_COUNT)
-		
-		const shouldUpload = lowServerCount || lowLocalCount || potentialDesync
+		const shouldUpload = lowServerCount || countMismatch
 		
 		if (shouldUpload) {
 			const reasons = []
 			if (lowServerCount) reasons.push(`server count low (${preKeyCount})`)
-			if (lowLocalCount) reasons.push(`local count low (${localKeyIds.length})`)
-			if (potentialDesync) reasons.push('potential key desync detected')
+			if (countMismatch) reasons.push(`count mismatch (local: ${localPreKeyCount}, server: ${preKeyCount})`)
 			
 			logger.info(`Uploading PreKeys due to: ${reasons.join(', ')}`)
 			await uploadPreKeys()
 		} else {
-			logger.info(`PreKey sync looks good - Server: ${preKeyCount}, Local: ${localKeyIds.length}`)
+			logger.info(`PreKey counts match well - Server: ${preKeyCount}, Local: ${localPreKeyCount}`)
 		}
 	}
 
