@@ -187,7 +187,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		console.debug(`[sendRetryRequest] Retry count for ${msgId}: ${retryCount}`)
 		
 		// Match whatsmeow: stop at retry count 5
-		if (retryCount >= 5) {
+		if (retryCount >= 10) {
 			logger.warn({ retryCount, msgId }, 'Not sending any more retry receipts')
 			msgRetryCache.del(key)
 			return
@@ -844,6 +844,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
 							console.debug(`[handleMessage] Missing keys error, sending NACK`)
 							return sendMessageAck(node, NACK_REASONS.ParsingError)
+						}
+
+						// Check if the error is related to missing pre-keys
+						const errorMessage = msg?.messageStubParameters?.[0] || ''
+						if (errorMessage.includes('PreKey') && errorMessage.includes('not found')) {
+							logger.info({ error: errorMessage }, 'PreKey not found error detected, uploading new pre-keys')
+							// Upload pre-keys directly since we know they're missing
+							uploadPreKeys().catch(err => {
+								logger.error({ err }, 'Failed to upload pre-keys after PreKey not found error')
+							})
 						}
 
 						console.debug(`[handleMessage] Attempting retry request for failed decryption`)
