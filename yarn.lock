@@ -2658,7 +2658,7 @@ __metadata:
     jimp: "npm:^1.6.0"
     jiti: "npm:^2.4.2"
     json: "npm:^11.0.0"
-    libsignal: "git+https://github.com/Simplify-Solucoes/libsignal-node#master"
+    libsignal: "git+https://github.com/Simplify-Solucoes/libsignal-node"
     link-preview-js: "npm:^3.0.0"
     music-metadata: "npm:^11.7.0"
     open: "npm:^8.4.2"
@@ -6964,9 +6964,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"libsignal@git+https://github.com/Simplify-Solucoes/libsignal-node#master":
+"libsignal@git+https://github.com/Simplify-Solucoes/libsignal-node":
   version: 2.0.1
-  resolution: "libsignal@https://github.com/Simplify-Solucoes/libsignal-node.git#commit=b0d3d43c140b5ee7a739985bc463343e1f414550"
+  resolution: "libsignal@https://github.com/Simplify-Solucoes/libsignal-node.git#commit=9349363fa733a1b57cc89ad493d27788cffd01d8"
   dependencies:
     "@types/google-protobuf": "npm:^3.15.12"
     "@wppconnect/curve25519": "npm:^1.0.0"
@@ -6974,7 +6974,7 @@ __metadata:
     google-protobuf: "npm:^3.21.4"
     long: "npm:^5.3.2"
     protobufjs: "npm:^7.4.0"
-  checksum: 10c0/283c484d0b4d49935a2d37cbded2496fb0bcf7ead415bd84a9ab20feededd486712a59055d2de15d429a83ca36dcce6e75e66def2eb2b57be4b5e574853dea8f
+  checksum: 10c0/73be83a45ca35f99cced1cc4525e1c91e2fd3b22c95f29e759bd5f42350c527510375351d12eb4cac40b7446ce306e4ba108c3997309247fefabfdb57f760adf
   languageName: node
   linkType: hard
 
