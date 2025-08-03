@@ -872,7 +872,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									try {
 										// Upload pre-keys (with built-in deduplication)
 										logger.debug('Uploading pre-keys for error recovery')
-										await uploadPreKeys(10)
+										await uploadPreKeys(2)
 										
 										// Wait for server to process new pre-keys
 										logger.debug('Waiting for server to process new pre-keys')
