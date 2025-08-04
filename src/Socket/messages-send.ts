@@ -1286,17 +1286,28 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					attrs: { count: '1' },
 					content: undefined
 				}
-				await new Promise(resolve => setTimeout(resolve, 1000))
-				await sendMessagesAgain(testKey, testIds, testRetryNode, {
-					getMessage: config.getMessage,
-					assertSessions,
-					authState,
-					relayMessage,
-					updateSendMessageAgainCount: (id: string, participant: string) => {
-						logger.info({ id, participant }, 'TEST: updateSendMessageAgainCount called')
-					},
-					logger
-				})
+				await new Promise(resolve => setTimeout(resolve, 3000))
+				logger.info({ testKey, testIds }, 'TEST: Starting sendMessagesAgain test')
+				try {
+					await sendMessagesAgain(testKey, testIds, testRetryNode, {
+						getMessage: async (key) => {
+							logger.info({ key }, 'TEST: getMessage called')
+							const msg = await config.getMessage(key)
+							logger.info({ hasMsg: !!msg }, 'TEST: getMessage result')
+							return msg
+						},
+						assertSessions,
+						authState,
+						relayMessage,
+						updateSendMessageAgainCount: (id: string, participant: string) => {
+							logger.info({ id, participant }, 'TEST: updateSendMessageAgainCount called')
+						},
+						logger
+					})
+					logger.info('TEST: sendMessagesAgain completed')
+				} catch (error) {
+					logger.error({ error }, 'TEST: sendMessagesAgain failed')
+				}
 				
 				return fullMsg
 			}
