@@ -61,6 +61,8 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
 	flush(): boolean
 	/** is there an ongoing buffer */
 	isBuffering(): boolean
+	/** emit event immediately bypassing buffer for critical events like sent messages */
+	emitImmediately<T extends BaileysEvent>(event: BaileysEvent, evData: BaileysEventMap[T]): boolean
 }
 
 /**
@@ -74,6 +76,7 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 
 	let data = makeBufferData()
 	let isBuffering = false
+	const immediatelyEmittedMessages = new Set<string>()
 
 	// take the generic event and fire it as a baileys event
 	ev.on('event', (map: BaileysEventData) => {
@@ -133,10 +136,23 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		},
 		emit<T extends BaileysEvent>(event: BaileysEvent, evData: BaileysEventMap[T]) {
 			if (isBuffering && BUFFERABLE_EVENT_SET.has(event)) {
-				append(data, historyCache, event as BufferableEvent, evData, logger)
+				append(data, historyCache, event as BufferableEvent, evData, logger, immediatelyEmittedMessages)
 				return true
 			}
 
+			return ev.emit('event', { [event]: evData })
+		},
+		emitImmediately<T extends BaileysEvent>(event: BaileysEvent, evData: BaileysEventMap[T]) {
+			// For sent messages that need immediate availability (e.g., for retry system)
+			if (event === 'messages.upsert') {
+				const upsertData = evData as BaileysEventMap['messages.upsert']
+				for (const msg of upsertData.messages) {
+					if (msg.key.fromMe) {
+						const msgKey = stringifyMessageKey(msg.key)
+						immediatelyEmittedMessages.add(msgKey)
+					}
+				}
+			}
 			return ev.emit('event', { [event]: evData })
 		},
 		isBuffering() {
@@ -189,7 +205,8 @@ function append<E extends BufferableEvent>(
 	event: E,
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	eventData: any,
-	logger: ILogger
+	logger: ILogger,
+	immediatelyEmittedMessages: Set<string>
 ) {
 	switch (event) {
 		case 'messaging-history.set':
@@ -357,6 +374,14 @@ function append<E extends BufferableEvent>(
 			const { messages, type } = eventData as BaileysEventMap['messages.upsert']
 			for (const message of messages) {
 				const key = stringifyMessageKey(message.key)
+				
+				// Skip messages that were already emitted immediately to prevent double emission
+				if (immediatelyEmittedMessages.has(key)) {
+					logger.debug({ messageId: key }, 'skipping buffered upsert for immediately emitted message')
+					immediatelyEmittedMessages.delete(key) // Clean up tracking
+					continue
+				}
+				
 				let existing = data.messageUpserts[key]?.message
 				if (!existing) {
 					existing = data.historySets.messages[key]

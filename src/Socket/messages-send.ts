@@ -81,6 +81,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		groupToggleEphemeral
 	} = sock
 
+
 	const userDevicesCache =
 		config.userDevicesCache ||
 		new NodeCache<JidWithDevice[]>({
@@ -1261,9 +1262,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 
 				if (config.emitOwnEvents) {
-					process.nextTick(() => {
-						processingMutex.mutex(() => upsertMessage(fullMsg, 'append'))
-					})
+					// Emit sent messages immediately to ensure retry system works
+					if (ev.emitImmediately) {
+						logger.debug({ msgId: fullMsg.key.id }, 'emitting sent message immediately for retry system')
+						ev.emitImmediately('messages.upsert', { messages: [fullMsg], type: 'notify' })
+					} else {
+						// Fallback to normal buffered approach if emitImmediately is not available
+						process.nextTick(() => {
+							processingMutex.mutex(() => upsertMessage(fullMsg, 'append'))
+						})
+					}
 				}
 
 				// await relayMessage(jid, fullMsg.message!, {
