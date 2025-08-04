@@ -1314,6 +1314,45 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	})
 
+	// Store a reference to process test receipts
+	const processTestRetryReceipt = (node: BinaryNode) => {
+		logger.info('TEST: Processing retry receipt through normal handler')
+		processNode('receipt', node, 'handling test retry receipt', handleReceipt)
+	}
+	
+	// Always expose it globally on this test branch
+	(globalThis as any).__processTestRetryReceipt = processTestRetryReceipt
+	
+	// Handle test retry after message is sent and buffer potentially flushed
+	const eventEmitter = ev as any
+	eventEmitter.on('test.message-sent', (msgKey: proto.IMessageKey) => {
+		logger.info({ msgKey }, 'TEST: Message sent, scheduling retry test')
+		
+		setTimeout(() => {
+			logger.info({ msgKey }, 'TEST: Triggering retry receipt')
+			
+			const retryNode: BinaryNode = {
+				tag: 'receipt',
+				attrs: {
+					from: msgKey.remoteJid!,
+					type: 'retry',
+					id: msgKey.id!,
+					t: Date.now().toString()
+				},
+				content: [
+					{
+						tag: 'retry',
+						attrs: { count: '1', v: '1' },
+						content: undefined
+					}
+				]
+			}
+			
+			processTestRetryReceipt(retryNode)
+		}, 5000) // 5 second delay to ensure buffer has flushed
+	})
+
+
 	return {
 		...sock,
 		sendMessageAck,

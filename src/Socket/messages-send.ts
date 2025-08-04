@@ -56,7 +56,6 @@ import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeGroupsSocket } from './groups'
 import type { NewsletterSocket } from './newsletter'
 import { makeNewsletterSocket } from './newsletter'
-import { sendMessagesAgain } from './message-utils'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -1263,15 +1262,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				if (config.emitOwnEvents) {
 					// Emit sent messages immediately to ensure retry system works
-					if (ev.emitImmediately) {
-						logger.debug({ msgId: fullMsg.key.id }, 'emitting sent message immediately for retry system')
-						ev.emitImmediately('messages.upsert', { messages: [fullMsg], type: 'notify' })
-					} else {
+					// if (ev.emitImmediately) {
+					// 	logger.debug({ msgId: fullMsg.key.id }, 'emitting sent message immediately for retry system')
+					// 	ev.emitImmediately('messages.upsert', { messages: [fullMsg], type: 'notify' })
+					// } else {
 						// Fallback to normal buffered approach if emitImmediately is not available
 						process.nextTick(() => {
 							processingMutex.mutex(() => upsertMessage(fullMsg, 'append'))
 						})
-					}
+					//}
 				}
 
 				// await relayMessage(jid, fullMsg.message!, {
@@ -1282,40 +1281,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// 	additionalNodes
 				// })
 
-				// TEST: sendMessagesAgain - uncomment to test
-				const testKey: proto.IMessageKey = {
-					remoteJid: jid,
-					fromMe: true,
-					id: fullMsg.key.id
-				}
-				const testIds = [fullMsg.key.id!]
-				const testRetryNode: BinaryNode = {
-					tag: 'retry',
-					attrs: { count: '1' },
-					content: undefined
-				}
-				await new Promise(resolve => setTimeout(resolve, 10000))
-				logger.info({ testKey, testIds }, 'TEST: Starting sendMessagesAgain test')
-				try {
-					await sendMessagesAgain(testKey, testIds, testRetryNode, {
-						getMessage: async (key) => {
-							logger.info({ key }, 'TEST: getMessage called')
-							const msg = await config.getMessage(key)
-							logger.info({ hasMsg: !!msg }, 'TEST: getMessage result')
-							return msg
-						},
-						assertSessions,
-						authState,
-						relayMessage,
-						updateSendMessageAgainCount: (id: string, participant: string) => {
-							logger.info({ id, participant }, 'TEST: updateSendMessageAgainCount called')
-						},
-						logger
-					})
-					logger.info('TEST: sendMessagesAgain completed')
-				} catch (error) {
-					logger.error({ error }, 'TEST: sendMessagesAgain failed')
-				}
+				// TEST: Emit event for retry test (to be handled outside after buffer flush)
+				process.nextTick(() => {
+					(ev as any).emit('test.message-sent', fullMsg.key)
+				})
 				
 				return fullMsg
 			}
