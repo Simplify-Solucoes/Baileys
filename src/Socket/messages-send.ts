@@ -1286,6 +1286,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					attrs: { count: '1' },
 					content: undefined
 				}
+				await new Promise(resolve => setTimeout(resolve, 1000))
 				await sendMessagesAgain(testKey, testIds, testRetryNode, {
 					getMessage: config.getMessage,
 					assertSessions,
