@@ -56,6 +56,7 @@ import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeGroupsSocket } from './groups'
 import type { NewsletterSocket } from './newsletter'
 import { makeNewsletterSocket } from './newsletter'
+import { sendMessagesAgain } from './message-utils'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -1259,19 +1260,43 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					)
 				}
 
-				await relayMessage(jid, fullMsg.message!, {
-					messageId: fullMsg.key.id!,
-					useCachedGroupMetadata: options.useCachedGroupMetadata,
-					additionalAttributes,
-					statusJidList: options.statusJidList,
-					additionalNodes
-				})
 				if (config.emitOwnEvents) {
 					process.nextTick(() => {
 						processingMutex.mutex(() => upsertMessage(fullMsg, 'append'))
 					})
 				}
 
+				// await relayMessage(jid, fullMsg.message!, {
+				// 	messageId: fullMsg.key.id!,
+				// 	useCachedGroupMetadata: options.useCachedGroupMetadata,
+				// 	additionalAttributes,
+				// 	statusJidList: options.statusJidList,
+				// 	additionalNodes
+				// })
+
+				// TEST: sendMessagesAgain - uncomment to test
+				const testKey: proto.IMessageKey = {
+					remoteJid: jid,
+					fromMe: true,
+					id: fullMsg.key.id
+				}
+				const testIds = [fullMsg.key.id!]
+				const testRetryNode: BinaryNode = {
+					tag: 'retry',
+					attrs: { count: '1' },
+					content: undefined
+				}
+				await sendMessagesAgain(testKey, testIds, testRetryNode, {
+					getMessage: config.getMessage,
+					assertSessions,
+					authState,
+					relayMessage,
+					updateSendMessageAgainCount: (id: string, participant: string) => {
+						logger.info({ id, participant }, 'TEST: updateSendMessageAgainCount called')
+					},
+					logger
+				})
+				
 				return fullMsg
 			}
 		}

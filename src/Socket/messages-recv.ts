@@ -595,41 +595,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const sendMessagesAgain = async (key: proto.IMessageKey, ids: string[], retryNode: BinaryNode) => {
-		// todo: implement a cache to store the last 256 sent messages (copy whatsmeow)
-		const msgs = await Promise.all(ids.map(id => getMessage({ ...key, id })))
-		const remoteJid = key.remoteJid!
-		const participant = key.participant || remoteJid
-		// if it's the primary jid sending the request
-		// just re-send the message to everyone
-		// prevents the first message decryption failure
-		const sendToAll = !jidDecode(participant)?.device
-		await assertSessions([participant], true)
-
-		if (isJidGroup(remoteJid)) {
-			await authState.keys.set({ 'sender-key-memory': { [remoteJid]: null } })
-		}
-
-		logger.debug({ participant, sendToAll }, 'forced new session for retry recp')
-
-		for (const [i, msg] of msgs.entries()) {
-			if (msg) {
-				updateSendMessageAgainCount(ids[i]!, participant)
-				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
-
-				if (sendToAll) {
-					msgRelayOpts.useUserDevicesCache = false
-				} else {
-					msgRelayOpts.participant = {
-						jid: participant,
-						count: +retryNode.attrs.count!
-					}
-				}
-
-				await relayMessage(key.remoteJid!, msg, msgRelayOpts)
-			} else {
-				logger.debug({ jid: key.remoteJid, id: ids[i] }, 'recv retry request, but message not available')
-			}
-		}
+		const { sendMessagesAgain: sendMessagesAgainImpl } = await import('./message-utils')
+		return sendMessagesAgainImpl(key, ids, retryNode, {
+			getMessage,
+			assertSessions,
+			authState,
+			relayMessage,
+			updateSendMessageAgainCount,
+			logger
+		})
 	}
 
 	const handleReceipt = async (node: BinaryNode) => {
@@ -1346,6 +1320,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		sendRetryRequest,
 		rejectCall,
 		fetchMessageHistory,
-		requestPlaceholderResend
+		requestPlaceholderResend,
+		sendMessagesAgain
 	}
 }
