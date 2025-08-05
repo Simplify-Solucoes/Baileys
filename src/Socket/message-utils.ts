@@ -1,11 +1,10 @@
-import type { Logger } from 'pino'
 import type { proto } from '../../WAProto/index.js'
 import type { BinaryNode } from '../WABinary'
-import type { AuthenticationState, MessageRelayOptions, SocketConfig } from '../Types'
+import type { AuthenticationState, MessageRelayOptions } from '../Types'
 import { isJidGroup, jidDecode } from '../WABinary'
 
 export type SendMessagesAgainDeps = {
-    getMessage: SocketConfig['getMessage']
+    getMessage: (key: proto.IMessageKey) => Promise<proto.IMessage | undefined>
     assertSessions: (jids: string[], force: boolean) => Promise<boolean>
     authState: AuthenticationState
     relayMessage: (jid: string, message: proto.IMessage, options: MessageRelayOptions) => Promise<string>
@@ -21,7 +20,7 @@ export const sendMessagesAgain = async (
 ) => {
     const { getMessage, assertSessions, authState, relayMessage, updateSendMessageAgainCount, logger } = deps
     
-    // todo: implement a cache to store the last 256 sent messages (copy whatsmeow)
+    // Cache implemented in makeMessagesSocket - getMessage now checks cache first
     const msgs = await Promise.all(ids.map(id => getMessage({ ...key, id })))
     const remoteJid = key.remoteJid!
     const participant = key.participant || remoteJid

@@ -58,7 +58,7 @@ import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
-	const { logger, retryRequestDelayMs, maxMsgRetryCount, getMessage, shouldIgnoreJid } = config
+	const { logger, retryRequestDelayMs, maxMsgRetryCount, shouldIgnoreJid } = config
 	const sock = makeMessagesSocket(config)
 	const {
 		ev,
@@ -75,7 +75,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		relayMessage,
 		sendReceipt,
 		uploadPreKeys,
-		sendPeerDataOperationMessage
+		sendPeerDataOperationMessage,
+		getMessage // Built-in getMessage from message cache
 	} = sock
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
@@ -597,7 +598,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const sendMessagesAgain = async (key: proto.IMessageKey, ids: string[], retryNode: BinaryNode) => {
 		const { sendMessagesAgain: sendMessagesAgainImpl } = await import('./message-utils')
 		return sendMessagesAgainImpl(key, ids, retryNode, {
-			getMessage,
+			getMessage, // Built-in getMessage from message cache
 			assertSessions,
 			authState,
 			relayMessage,
@@ -1349,7 +1350,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 			
 			processTestRetryReceipt(retryNode)
-		}, 5000) // 5 second delay to ensure buffer has flushed
+		}, 10000) // 10 second delay to ensure buffer has flushed and message is stored
 	})
 
 

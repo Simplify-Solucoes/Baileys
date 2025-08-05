@@ -53,6 +53,7 @@ import {
 	STORIES_JID
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
+import { MessageCache, createMessageCacheKey, type MessageCacheConfig } from '../Utils/message-cache'
 import { makeGroupsSocket } from './groups'
 import type { NewsletterSocket } from './newsletter'
 import { makeNewsletterSocket } from './newsletter'
@@ -64,7 +65,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		generateHighQualityLinkPreview,
 		options: axiosOptions,
 		patchMessageBeforeSending,
-		cachedGroupMetadata
+		cachedGroupMetadata,
+		messageCacheConfig
 	} = config
 	const sock: NewsletterSocket = makeNewsletterSocket(makeGroupsSocket(config))
 	const {
@@ -80,6 +82,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		groupToggleEphemeral
 	} = sock
 
+	// Initialize built-in message cache (replaces external getMessage)
+	const messageCache = new MessageCache(logger, messageCacheConfig)
+
+	// Cleanup cache on socket destruction
+	const originalDestroy = (sock as any).destroy
+	if (originalDestroy) {
+		(sock as any).destroy = () => {
+			messageCache.destroy()
+			return originalDestroy.call(sock)
+		}
+	}
 
 	const userDevicesCache =
 		config.userDevicesCache ||
@@ -1142,6 +1155,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		getUSyncDevices,
 		sendStatusMentions,
 		sendAlbumMessage,
+		// Built-in getMessage implementation (replaces external getMessage)
+		getMessage: messageCache.getMessage.bind(messageCache),
+		// Message cache for monitoring and stats
+		messageCache,
 		updateMediaMessage: async (message: proto.IWebMessageInfo) => {
 			const content = assertMediaContent(message.message)
 			const mediaKey = content.mediaKey!
@@ -1272,6 +1289,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						})
 					//}
 				}
+
+				// Cache the message before sending for immediate retry availability
+				const cacheKey = createMessageCacheKey(fullMsg.key)
+				messageCache.set(cacheKey, fullMsg.message!)
+				logger.trace({ key: cacheKey, msgId: fullMsg.key.id }, 'Message cached before sending')
 
 				// await relayMessage(jid, fullMsg.message!, {
 				// 	messageId: fullMsg.key.id!,
