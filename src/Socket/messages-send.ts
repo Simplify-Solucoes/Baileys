@@ -81,6 +81,25 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		groupToggleEphemeral
 	} = sock
 
+	// Helper function to get privacy token with LID-PN cross-referencing (enhanced from whatsmeow)
+	const getPrivacyToken = async (jid: string): Promise<Buffer | null> => {
+		try {
+			// Use the privacy token manager for proper LID-PN cross-referencing
+			const privacyTokenManager = signalRepository.getPrivacyTokenManager()
+			const tokenData = await privacyTokenManager.getPrivacyToken(jid)
+			
+			if (tokenData?.token && Buffer.isBuffer(tokenData.token)) {
+				logger.trace({ jid }, 'privacy token found for message sending with LID cross-referencing')
+				return tokenData.token
+			}
+			
+			return null
+		} catch (error) {
+			logger.debug({ jid, error }, 'failed to get privacy token')
+			return null
+		}
+	}
+
 	const userDevicesCache =
 		config.userDevicesCache ||
 		new NodeCache<JidWithDevice[]>({
