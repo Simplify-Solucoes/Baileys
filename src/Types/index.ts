@@ -10,7 +10,6 @@ export * from './Product'
 export * from './Call'
 export * from './Signal'
 export * from './Newsletter'
-export * from '../Utils/message-cache'
 
 import type { AuthenticationState } from './Auth'
 import type { SocketConfig } from './Socket'
