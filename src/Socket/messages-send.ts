@@ -380,37 +380,54 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		let shouldIncludeDeviceIdentity = false
 
 		const nodes = await Promise.all(
-			patched.map(async patchedMessageWithJid => {
+			patched.map(async (patchedMessageWithJid, index) => {
 				const { recipientJid: jid, ...patchedMessage } = patchedMessageWithJid
 				if (!jid) {
-					return {} as BinaryNode
+					logger.error({ index, patchedMessageWithJid }, 'CRITICAL: Missing recipientJid in createParticipantNodes - device will not receive message')
+					return null // Return null instead of empty object to filter out
 				}
 
-				const bytes = encodeWAMessage(patchedMessage)
-				const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
-				if (type === 'pkmsg') {
-					shouldIncludeDeviceIdentity = true
-				}
+				try {
+					const bytes = encodeWAMessage(patchedMessage)
+					const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
+					if (type === 'pkmsg') {
+						shouldIncludeDeviceIdentity = true
+					}
 
-				const node: BinaryNode = {
-					tag: 'to',
-					attrs: { jid },
-					content: [
-						{
-							tag: 'enc',
-							attrs: {
-								v: '2',
-								type,
-								...(extraAttrs || {})
-							},
-							content: ciphertext
-						}
-					]
+					const node: BinaryNode = {
+						tag: 'to',
+						attrs: { jid },
+						content: [
+							{
+								tag: 'enc',
+								attrs: {
+									v: '2',
+									type,
+									...(extraAttrs || {})
+								},
+								content: ciphertext
+							}
+						]
+					}
+					logger.trace({ jid, type }, 'Successfully encrypted message for device')
+					return node
+				} catch (encryptionError) {
+					logger.error({ jid, encryptionError }, 'ENCRYPTION FAILED for device - message will not be delivered')
+					return null // Return null to filter out failed encryptions
 				}
-				return node
 			})
 		)
-		return { nodes, shouldIncludeDeviceIdentity }
+		// Filter out failed encryptions (null values)
+		const validNodes = nodes.filter(node => node !== null) as BinaryNode[]
+		
+		if (validNodes.length !== nodes.length) {
+			logger.warn({ 
+				totalDevices: nodes.length, 
+				successfulDevices: validNodes.length, 
+				failedDevices: nodes.length - validNodes.length 
+			}, 'Some devices failed encryption - messages will not be delivered to those devices')
+		}
+		return { nodes: validNodes, shouldIncludeDeviceIdentity }
 	}
 
 	const relayMessage = async (
@@ -640,9 +657,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const { user: meUser } = jidDecode(meId)!
 
 				if (!participant) {
-					devices.push({ user })
+					// GUARANTEED DELIVERY: Always ensure primary devices (device 0) are included first
+					devices.push({ user, device: 0 })  // Target primary device
 					if (user !== meUser) {
-						devices.push({ user: meUser })
+						devices.push({ user: meUser, device: 0 })  // Own primary device
 					}
 
 					if (additionalAttributes?.['category'] !== 'peer') {
@@ -651,9 +669,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// CRITICAL VALIDATION: Ensure we have valid devices for direct message (following whatsmeow)
 						if (additionalDevices.length === 0) {
 							logger.warn({ meId, targetJid: jid }, 'no additional devices found - message will only send to primary devices')
+						} else {
+							logger.debug({ additionalDeviceCount: additionalDevices.length }, 'additional devices found for message delivery')
 						}
 						
-						devices.push(...additionalDevices)
+						// Add additional devices while avoiding duplicates
+						for (const device of additionalDevices) {
+							const isDuplicate = devices.some(d => d.user === device.user && d.device === device.device)
+							if (!isDuplicate) {
+								devices.push(device)
+							}
+						}
 					}
 				}
 
@@ -691,17 +717,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					// Continue anyway to see which specific devices fail during encryption
 				}
 
-				const [
-					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
-					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
-				] = await Promise.all([
-					createParticipantNodes(meJids, meMsg, extraAttrs),
-					createParticipantNodes(otherJids, message, extraAttrs)
-				])
+				// SERIALIZED ENCRYPTION: Prevent race conditions in session access
+				// Encrypt own devices first, then other devices to avoid conflicts
+				const { nodes: meNodes, shouldIncludeDeviceIdentity: s1 } = await createParticipantNodes(meJids, meMsg, extraAttrs)
+				const { nodes: otherNodes, shouldIncludeDeviceIdentity: s2 } = await createParticipantNodes(otherJids, message, extraAttrs)
+				
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
 
 				shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || s1 || s2
+				
+				logger.debug({ 
+					meDevices: meNodes.length, 
+					otherDevices: otherNodes.length, 
+					totalDevices: participants.length 
+				}, 'Encryption completed for all devices')
 			}
 
 			if (participants.length) {
