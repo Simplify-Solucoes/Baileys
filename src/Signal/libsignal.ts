@@ -478,6 +478,9 @@ function signalStorage({ creds, keys }: SignalAuthState, lidMappingStore: LIDMap
 		storeSession: async (id: string, session: any) => {
 			await keys.set({ session: { [id]: session.serialize() } })
 			
+			// TEMPORARILY DISABLED: LID cache invalidation since LID mapping is disabled
+			console.log(`📦 Session stored: ${id} (cache invalidation disabled for testing)`)
+			/*
 			// CRITICAL: Invalidate LID mapping cache when session is updated
 			// This prevents using outdated cached sessions after new keys are received
 			try {
@@ -505,6 +508,7 @@ function signalStorage({ creds, keys }: SignalAuthState, lidMappingStore: LIDMap
 			} catch (error) {
 				console.warn('Failed to invalidate LID mapping cache:', error)
 			}
+			*/
 		},
 		isTrustedIdentity: async (_address: string, _identityKey: Buffer) => {
 			return true
