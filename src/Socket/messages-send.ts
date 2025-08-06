@@ -283,11 +283,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const signalId = signalRepository.jidToSignalProtocolAddress(jid)
 				const session = sessions[signalId]
 				
-				// ENHANCED VALIDATION: Session health check (following whatsmeow)
+				// SIMPLIFIED VALIDATION: Only check if session exists (original Baileys behavior)
 				if (!session) {
 					jidsRequiringFetch.push(jid)
 					logger.debug({ jid }, 'session missing - will fetch')
-				} else {
+				}
+				// DISABLED: Enhanced session validation that might be causing issues
+				/*
+				else {
 					try {
 						// Validate session can be deserialized and has open session
 						const sessionRecord = require('libsignal').SessionRecord.deserialize(session)
@@ -301,6 +304,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						logger.warn({ jid, sessionError }, 'session corrupted - will refresh')
 					}
 				}
+				*/
 			}
 		}
 
