@@ -467,10 +467,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const participants: BinaryNode[] = []
 		const destinationJid = !isStatus ? jidEncode(user, isLid ? 'lid' : isGroup ? 'g.us' : 's.whatsapp.net') : statusJid
-		
-		// WHATSAPP SENDER IDENTITY: Always use consistent sender identity to prevent chat duplication
-		// LID/PN addressing is handled at encryption level, not at message stanza level
-		const senderJid = meId
 
 		// PRIVACY TOKENS: Get privacy token for recipient (following whatsmeow approach)
 		const privacyToken = !isGroup && !isStatus ? await getPrivacyToken(destinationJid) : null
@@ -543,7 +539,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					tag: 'message',
 					attrs: {
 						to: jid,
-						from: senderJid,
 						id: msgId,
 						type: getMessageType(message),
 						...(additionalAttributes || {})
@@ -709,18 +704,29 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				
 				logger.debug({ deviceCount: allJids.length, devices: allJids }, 'encrypting message to devices')
 
+				// CONSISTENT JID ADDRESSING: Ensure same JIDs used for sessions and encryption
+				// Normalize all JIDs to prevent addressing inconsistencies
+				const normalizedAllJids = allJids.map(jid => {
+					const decoded = jidDecode(jid)
+					if (!decoded) return jid
+					// Ensure consistent addressing format
+					return jidEncode(decoded.user, decoded.server as any, decoded.device)
+				})
+				
+				const normalizedMeJids = normalizedAllJids.filter(jid => areJidsSameUser(jid, meId))
+				const normalizedOtherJids = normalizedAllJids.filter(jid => !areJidsSameUser(jid, meId))
+				
 				try {
-					await assertSessions(allJids, false)
-					logger.debug({ deviceCount: allJids.length }, 'all device sessions verified successfully')
+					await assertSessions(normalizedAllJids, false)
+					logger.debug({ deviceCount: normalizedAllJids.length }, 'all device sessions verified successfully')
 				} catch (sessionError) {
-					logger.error({ deviceCount: allJids.length, devices: allJids, sessionError }, 'session assertion failed for some devices')
+					logger.error({ deviceCount: normalizedAllJids.length, devices: normalizedAllJids, sessionError }, 'session assertion failed for some devices')
 					// Continue anyway to see which specific devices fail during encryption
 				}
 
-				// SERIALIZED ENCRYPTION: Prevent race conditions in session access
-				// Encrypt own devices first, then other devices to avoid conflicts
-				const { nodes: meNodes, shouldIncludeDeviceIdentity: s1 } = await createParticipantNodes(meJids, meMsg, extraAttrs)
-				const { nodes: otherNodes, shouldIncludeDeviceIdentity: s2 } = await createParticipantNodes(otherJids, message, extraAttrs)
+				// SERIALIZED ENCRYPTION: Use the SAME normalized JIDs that were used for session assertion
+				const { nodes: meNodes, shouldIncludeDeviceIdentity: s1 } = await createParticipantNodes(normalizedMeJids, meMsg, extraAttrs)
+				const { nodes: otherNodes, shouldIncludeDeviceIdentity: s2 } = await createParticipantNodes(normalizedOtherJids, message, extraAttrs)
 				
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
@@ -758,7 +764,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const stanza: BinaryNode = {
 				tag: 'message',
 				attrs: {
-					from: senderJid,
 					id: msgId,
 					type: getMessageType(message),
 					...(additionalAttributes || {})
@@ -851,8 +856,46 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const getMessageType = (message: proto.IMessage) => {
+		// Enhanced message type detection following whatsmeow approach
 		if (message.pollCreationMessage || message.pollCreationMessageV2 || message.pollCreationMessageV3) {
 			return 'poll'
+		}
+		if (message.imageMessage) {
+			return 'image'
+		}
+		if (message.videoMessage) {
+			return message.videoMessage.gifPlayback ? 'gif' : 'video'
+		}
+		if (message.audioMessage) {
+			return message.audioMessage.ptt ? 'ptt' : 'audio'
+		}
+		if (message.ptvMessage) {
+			return 'ptv'
+		}
+		if (message.documentMessage) {
+			return 'document'
+		}
+		if (message.stickerMessage) {
+			return message.stickerMessage.isLottie
+				? '1p_sticker'
+				: message.stickerMessage.isAvatar
+					? 'avatar_sticker'
+					: 'sticker'
+		}
+		if (message.contactMessage) {
+			return 'vcard'
+		}
+		if (message.contactsArrayMessage) {
+			return 'contact_array'
+		}
+		if (message.locationMessage) {
+			return 'location'
+		}
+		if (message.liveLocationMessage) {
+			return 'livelocation'
+		}
+		if (message.reactionMessage) {
+			return 'reaction'
 		}
 
 		return 'text'
