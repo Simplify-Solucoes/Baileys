@@ -453,7 +453,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isNewsletter = server === 'newsletter'
 
 		msgId = msgId || generateMessageIDV2(sock.user?.id)
-		useUserDevicesCache = useUserDevicesCache !== false
+		// TEMPORARILY DISABLE device cache to test if it's causing session sync issues
+		useUserDevicesCache = false // useUserDevicesCache !== false
+		logger.warn({ msgId, jid }, 'USER DEVICES CACHE DISABLED FOR TESTING - forcing fresh device fetch')
 		useCachedGroupMetadata = useCachedGroupMetadata !== false && !isStatus
 
 		const participants: BinaryNode[] = []
@@ -1383,6 +1385,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						'cachedGroupMetadata in sendMessage are deprecated, now cachedGroupMetadata is part of the socket config.'
 					)
 				}
+				
+				// Cache message BEFORE relayMessage to ensure consistency with what's actually sent
+				// This prevents issues when session changes occur during encryption
+				messageCache.addRecentMessage(fullMsg.key.remoteJid!, fullMsg.key.id!, fullMsg.message!)
+				logger.trace({ remoteJid: fullMsg.key.remoteJid, msgId: fullMsg.key.id }, 'Message cached before encryption')
 
 				await relayMessage(jid, fullMsg.message!, {
 					messageId: fullMsg.key.id!,
@@ -1391,10 +1398,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					statusJidList: options.statusJidList,
 					additionalNodes
 				})
-				
-				// Cache message using simplified whatsmeow approach
-				messageCache.addRecentMessage(fullMsg.key.remoteJid!, fullMsg.key.id!, fullMsg.message!)
-				logger.trace({ remoteJid: fullMsg.key.remoteJid, msgId: fullMsg.key.id }, 'Message cached before sending')
 
 				if (config.emitOwnEvents) {
 					process.nextTick(() => {

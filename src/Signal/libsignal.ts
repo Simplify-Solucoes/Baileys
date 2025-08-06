@@ -148,6 +148,9 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			return jid // Return original JID - no LID mapping needed for own devices
 		}
 		
+		// TEMPORARILY DISABLED: LID mapping lookup to bypass cache
+		console.warn(`🚫 LID MAPPING DISABLED FOR TESTING - skipping PN->LID lookup for: ${jid}`)
+		/*
 		// If it's a phone number (and not our own), check for LID mapping
 		if (LIDMappingStore.isPN(jid)) {
 			// Extract device ID from original JID to preserve it
@@ -182,7 +185,11 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				console.log(`❌ No LID mapping found for: ${baseJid}`)
 			}
 		}
+		*/
 		
+		// TEMPORARILY DISABLED: LID mapping lookup to bypass cache
+		console.warn(`🚫 LID MAPPING DISABLED FOR TESTING - skipping LID->PN lookup for: ${jid}`)
+		/*
 		// If it's a LID, check for PN mapping
 		if (LIDMappingStore.isLID(jid)) {
 			// Extract device ID from original JID to preserve it
@@ -211,6 +218,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				}
 			}
 		}
+		*/
 		
 		// No session found, return original JID
 		return jid
@@ -254,11 +262,17 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			})
 		},
 		async decryptMessage({ jid, type, ciphertext }) {
+			// TEMPORARILY DISABLED: Reactive migration and session finding to bypass cache
+			console.warn(`🚫 REACTIVE MIGRATION & SESSION FINDING DISABLED FOR TESTING - using original JID: ${jid}`)
+			const decryptionJid = jid
+			
+			/* ORIGINAL VERSION - TEMPORARILY DISABLED
 			// REACTIVE MIGRATION: Handle contact type changes on incoming messages
 			const migratedJid = await reactiveSessionMigration(jid)
 			
 			// Find the correct JID/session for decryption (handles LID/PN migration)
 			const decryptionJid = await findSessionForDecryption(migratedJid)
+			*/
 			const addr = jidToSignalProtocolAddress(decryptionJid)
 			const session = new libsignal.SessionCipher(storage, addr)
 
@@ -296,6 +310,9 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				encryptionJid = primaryJid
 			}
 			
+			// TEMPORARILY DISABLED: Reactive session migration to bypass cache
+			console.warn(`🚫 REACTIVE SESSION MIGRATION DISABLED FOR TESTING - using original JID: ${encryptionJid}`)
+			/*
 			// REACTIVE SESSION MIGRATION: Handle contact type changes
 			if (ownPhoneNumber !== targetUser) {
 				// Perform reactive migration for external contacts
@@ -304,6 +321,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			} else {
 				console.log(`⚡ Fast path: Encrypting to own device (${encryptionJid})`)
 			}
+			*/
 			
 			const addr = jidToSignalProtocolAddress(encryptionJid)
 			const cipher = new libsignal.SessionCipher(storage, addr)
