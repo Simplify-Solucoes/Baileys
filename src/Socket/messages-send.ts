@@ -3,7 +3,6 @@ import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
 import { randomBytes } from 'crypto'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
-import { MessageCache, createMessageCacheKey, type MessageCacheConfig } from '../Utils/message-cache'
 import type {
 	AnyMessageContent,
 	MediaConnInfo,
@@ -66,8 +65,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		generateHighQualityLinkPreview,
 		options: axiosOptions,
 		patchMessageBeforeSending,
-		cachedGroupMetadata,
-		messageCacheConfig
+		cachedGroupMetadata
 	} = config
 	const sock: NewsletterSocket = makeNewsletterSocket(makeGroupsSocket(config))
 	const {
@@ -82,9 +80,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		groupMetadata,
 		groupToggleEphemeral
 	} = sock
-
-	// Initialize built-in message cache (replaces external getMessage)
-	const messageCache = new MessageCache(logger, messageCacheConfig)
 
 	// Helper function to get privacy token with LID-PN cross-referencing (enhanced from whatsmeow)
 	const getPrivacyToken = async (jid: string): Promise<Buffer | null> => {
@@ -102,15 +97,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		} catch (error) {
 			logger.debug({ jid, error }, 'failed to get privacy token')
 			return null
-		}
-	}
-
-	// Cleanup cache on socket destruction
-	const originalDestroy = (sock as any).destroy
-	if (originalDestroy) {
-		(sock as any).destroy = () => {
-			messageCache.destroy()
-			return originalDestroy.call(sock)
 		}
 	}
 
@@ -1270,10 +1256,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		getUSyncDevices,
 		sendStatusMentions,
 		sendAlbumMessage,
-		// Built-in getMessage implementation (replaces external getMessage)
-		getMessage: messageCache.getMessage.bind(messageCache),
-		// Message cache for monitoring and stats
-		messageCache,
 		updateMediaMessage: async (message: proto.IWebMessageInfo) => {
 			const content = assertMediaContent(message.message)
 			const mediaKey = content.mediaKey!
@@ -1391,11 +1373,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						'cachedGroupMetadata in sendMessage are deprecated, now cachedGroupMetadata is part of the socket config.'
 					)
 				}
-				
-				// Cache message BEFORE relayMessage to ensure consistency with what's actually sent
-				// This prevents issues when session changes occur during encryption
-				messageCache.addRecentMessage(fullMsg.key.remoteJid!, fullMsg.key.id!, fullMsg.message!)
-				logger.trace({ remoteJid: fullMsg.key.remoteJid, msgId: fullMsg.key.id }, 'Message cached before encryption')
 
 				await relayMessage(jid, fullMsg.message!, {
 					messageId: fullMsg.key.id!,
@@ -1404,11 +1381,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					statusJidList: options.statusJidList,
 					additionalNodes
 				})
-				
-				const cacheKey = createMessageCacheKey(fullMsg.key)
-				messageCache.set(cacheKey, fullMsg.message!)
-				logger.trace({ key: cacheKey, msgId: fullMsg.key.id }, 'Message cached before sending')
-
 				if (config.emitOwnEvents) {
 					process.nextTick(() => {
 						processingMutex.mutex(() => upsertMessage(fullMsg, 'append'))
