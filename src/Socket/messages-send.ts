@@ -654,12 +654,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				if (!participant) {
 					// GUARANTEED DELIVERY: Always ensure primary devices (device 0) are included first
 					devices.push({ user, device: 0 })  // Target primary device
-					if (user !== meUser) {
-						devices.push({ user: meUser, device: 0 })  // Own primary device
-					}
+					// REMOVED: Manual primary device addition - now handled by USyncQuery with ignoreZeroDevices: false
 
 					if (additionalAttributes?.['category'] !== 'peer') {
-						const additionalDevices = await getUSyncDevices([meId, jid], !!useUserDevicesCache, true)
+						// CRITICAL FIX: Include device 0 (primary device) in USyncQuery to match whatsmeow behavior
+						// whatsmeow includes both sender and recipient primary devices in the participants list
+						const additionalDevices = await getUSyncDevices([meId, jid], !!useUserDevicesCache, false)
 						
 						// CRITICAL VALIDATION: Ensure we have valid devices for direct message (following whatsmeow)
 						if (additionalDevices.length === 0) {
