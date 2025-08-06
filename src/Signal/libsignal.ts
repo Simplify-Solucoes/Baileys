@@ -10,11 +10,10 @@ import type { SenderKeyStore } from './Group/group_cipher'
 import { SenderKeyName } from './Group/sender-key-name'
 import { SenderKeyRecord } from './Group/sender-key-record'
 import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from './Group'
-import type { StorageType } from 'libsignal'
 
 export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository {
 	const lidMapping = new LIDMappingStore(auth.keys as SignalKeyStoreWithTransaction)
-	const storage : StorageType & SenderKeyStore = signalStorage(auth, lidMapping)
+	const storage : any = signalStorage(auth, lidMapping)
 	
 	// Initialize privacy token manager for session migration (following whatsmeow approach)
 	const privacyTokenManager = new PrivacyTokenManager(auth.keys as SignalKeyStoreWithTransaction, lidMapping)
@@ -364,35 +363,10 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		},
 		async injectE2ESession({ jid, session }) {
 			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
-			const transformedSession: any = {
-				registrationId: session.registrationId,
-				identityKey: Buffer.from(session.identityKey),
-				signedPreKey: {
-					keyId: session.signedPreKey.keyId,
-					keyPair: {
-						pubKey: Buffer.from(session.signedPreKey.publicKey),
-						privKey: Buffer.alloc(32) // Dummy private key, not needed for outgoing
-					},
-					signature: session.signedPreKey.signature
-				}
-			}
-
-			// Add preKey only if it exists (optional for existing sessions)
-			if (session.preKey) {
-				transformedSession.preKey = {
-					keyId: session.preKey.keyId,
-					keyPair: {
-						pubKey: Buffer.from(session.preKey.publicKey),
-						privKey: Buffer.alloc(32) // Dummy private key, not needed for outgoing
-					}
-				}
-			}
 
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-				await cipher.initOutgoing(transformedSession)
-				// Note: No LID cache invalidation needed here - E2E sessions are about encryption keys,
-				// not identity mappings. LID-PN relationships are independent of encryption sessions.
+				await cipher.initOutgoing(session)
 			})
 		},
 		jidToSignalProtocolAddress(jid) {
@@ -487,24 +461,18 @@ function signalStorage({ creds, keys }: SignalAuthState, lidMappingStore: LIDMap
 		isTrustedIdentity: async (_address: string, _identityKey: Buffer) => {
 			return true
 		},
-		loadPreKey: async (keyId: number) => {
-			const keyIdStr = keyId.toString()
-			const { [keyIdStr]: key } = await keys.get('pre-key', [keyIdStr])
+		loadPreKey: async (id: number | string) => {
+			const keyId = id.toString()
+			const { [keyId]: key } = await keys.get('pre-key', [keyId])
 			if (key) {
 				return {
-					keyId,
-					keyPair: {
-						privKey: Buffer.from(key.private),
-						pubKey: Buffer.from(key.public)
-					}
+					privKey: Buffer.from(key.private),
+					pubKey: Buffer.from(key.public)
 				}
 			}
-			return null
 		},
-		removePreKey: async (keyId: number) => {
-			return keys.set({ 'pre-key': { [keyId]: null } })
-		},
-		loadSignedPreKey: async () => {
+		removePreKey: (id: number) => keys.set({ 'pre-key': { [id]: null } }),
+		loadSignedPreKey: () => {
 			const key = creds.signedPreKey
 			return {
 				privKey: Buffer.from(key.keyPair.private),
@@ -525,21 +493,13 @@ function signalStorage({ creds, keys }: SignalAuthState, lidMappingStore: LIDMap
 			const serialized = JSON.stringify(key.serialize())
 			await keys.set({ 'sender-key': { [keyId]: Buffer.from(serialized, 'utf-8') } })
 		},
-		getOurRegistrationId: async () => creds.registrationId,
-		getOurIdentity: async () => {
+		getOurRegistrationId: () => creds.registrationId,
+		getOurIdentity: () => {
 			const { signedIdentityKey } = creds
 			return {
 				privKey: Buffer.from(signedIdentityKey.private),
-				pubKey: Buffer.from(generateSignalPubKey(signedIdentityKey.public))
+				pubKey: generateSignalPubKey(signedIdentityKey.public)
 			}
-		},
-		storeSignedPreKey: async (keyId: number, keyPair: any) => {
-			// Store signed pre key - not implemented in current system
-			console.warn('storeSignedPreKey not implemented:', keyId, keyPair)
-		},
-		removeSignedPreKey: async (keyId: number) => {
-			// Remove signed pre key - not implemented in current system
-			console.warn('removeSignedPreKey not implemented:', keyId)
 		}
 	}
 }
