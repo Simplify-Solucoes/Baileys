@@ -453,9 +453,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isNewsletter = server === 'newsletter'
 
 		msgId = msgId || generateMessageIDV2(sock.user?.id)
-		// TEMPORARILY DISABLE device cache to test if it's causing session sync issues
-		useUserDevicesCache = false // useUserDevicesCache !== false
-		logger.warn({ msgId, jid }, 'USER DEVICES CACHE DISABLED FOR TESTING - forcing fresh device fetch')
+		// RE-ENABLED: Device cache to ensure consistent device lists
+		useUserDevicesCache = useUserDevicesCache !== false
+		logger.debug({ msgId, jid, useCache: useUserDevicesCache }, 'device cache policy set')
 		useCachedGroupMetadata = useCachedGroupMetadata !== false && !isStatus
 
 		const participants: BinaryNode[] = []
@@ -693,7 +693,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				
 				logger.debug({ deviceCount: allJids.length, devices: allJids }, 'encrypting message to devices')
 
-				await assertSessions(allJids, false)
+				try {
+					await assertSessions(allJids, false)
+					logger.debug({ deviceCount: allJids.length }, 'all device sessions verified successfully')
+				} catch (sessionError) {
+					logger.error({ deviceCount: allJids.length, devices: allJids, sessionError }, 'session assertion failed for some devices')
+					// Continue anyway to see which specific devices fail during encryption
+				}
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
