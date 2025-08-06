@@ -301,6 +301,9 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			
 			let encryptionJid = jid
 			
+			// TEMPORARILY DISABLED: Primary device optimization to test session issues
+			console.warn(`🚫 PRIMARY DEVICE OPTIMIZATION DISABLED - keeping original JID with device: ${jid}`)
+			/*
 			// PRIMARY DEVICE OPTIMIZATION: Strip device ID to encrypt to primary device only
 			const decoded = jidDecode(jid)
 			if (decoded && decoded.device && ownPhoneNumber !== targetUser) {
@@ -309,6 +312,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				console.log(`📱 Primary device optimization: ${jid} → ${primaryJid}`)
 				encryptionJid = primaryJid
 			}
+			*/
 			
 			// TEMPORARILY DISABLED: Reactive session migration to bypass cache
 			console.warn(`🚫 REACTIVE SESSION MIGRATION DISABLED FOR TESTING - using original JID: ${encryptionJid}`)
