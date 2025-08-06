@@ -3,7 +3,7 @@ import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
 import { randomBytes } from 'crypto'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
-import { MessageCache, type MessageCacheConfig } from '../Utils/message-cache'
+import { MessageCache, createMessageCacheKey, type MessageCacheConfig } from '../Utils/message-cache'
 import type {
 	AnyMessageContent,
 	MediaConnInfo,
@@ -1392,9 +1392,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					additionalNodes
 				})
 				
-				// Cache message using simplified whatsmeow approach
-				messageCache.addRecentMessage(fullMsg.key.remoteJid!, fullMsg.key.id!, fullMsg.message!)
-				logger.trace({ remoteJid: fullMsg.key.remoteJid, msgId: fullMsg.key.id }, 'Message cached before sending')
+				const cacheKey = createMessageCacheKey(fullMsg.key)
+				messageCache.set(cacheKey, fullMsg.message!)
+				logger.trace({ key: cacheKey, msgId: fullMsg.key.id }, 'Message cached before sending')
 
 				if (config.emitOwnEvents) {
 					process.nextTick(() => {
