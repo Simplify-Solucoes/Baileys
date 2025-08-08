@@ -432,7 +432,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		jids: string[], 
 		message: proto.IMessage, 
 		extraAttrs?: BinaryNode['attrs'],
-		// WHATSMEOW: DSM support for own devices
+		// DSM support for own devices
 		dsmMessage?: proto.IMessage
 	) => {
 		let patched = await patchMessageBeforeSending(message, jids)
@@ -452,7 +452,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					return {} as BinaryNode
 				}
 
-				// DSM logic only applies when dsmMessage is provided (for own devices)
+				// DSM logic: Use DSM for own other devices
 				let messageToEncrypt = patchedMessage
 				if (dsmMessage) {
 					const { user: targetUser } = jidDecode(wireJid)!
@@ -460,7 +460,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 									  wireJid !== meId && wireJid !== authState.creds.me?.lid
 					
 					if (isOwnDevice) {
-						// Use DSM for own other devices (not main device)
 						messageToEncrypt = dsmMessage
 						console.log(`📱 Using DSM for own device: ${wireJid}`)
 					}
@@ -468,30 +467,27 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const bytes = encodeWAMessage(messageToEncrypt)
 				
-				// WHATSMEOW LOGIC: Separate wire identity and encryption identity
-				// Wire identity: what appears in the message envelope
-				// Encryption identity: what's used for actual Signal encryption
-				let encryptionIdentity = wireJid
-				
-				// Apply LID encryption priority (following whatsmeow's approach)
+				// WIRE JID: Determine encryption identity (following whatsmeow's approach)
+				let encryptionJid = wireJid
 				if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
 					try {
 						const lidStore = signalRepository.getLIDMappingStore()
 						const lidForPN = await lidStore.getLIDForPN(wireJid)
 						
 						if (lidForPN && lidForPN.includes('@lid')) {
-							// Migrate session if needed
+							// Migrate session from PN to LID
 							await signalRepository.migrateSession(wireJid, lidForPN)
-							encryptionIdentity = lidForPN
-							console.log(`🔄 Wire-Encryption separation: ${wireJid} → ${encryptionIdentity}`)
+							encryptionJid = lidForPN
+							console.log(`🔄 Wire-Encryption separation: ${wireJid} → ${encryptionJid}`)
 						}
 					} catch (error) {
 						console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)
 					}
 				}
 				
+				// SIMPLE: Just encrypt with the determined identity (like original)
 				const { type, ciphertext } = await signalRepository.encryptMessage({ 
-					jid: encryptionIdentity,  // Use encryption identity for Signal encryption
+					jid: encryptionJid,  // Use LID if available, PN otherwise
 					data: bytes
 				})
 				
@@ -499,10 +495,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					shouldIncludeDeviceIdentity = true
 				}
 
-				// WHATSMEOW: Use wire identity in message envelope
 				const node: BinaryNode = {
 					tag: 'to',
-					attrs: { jid: wireJid },  // Wire identity in envelope
+					attrs: { jid: wireJid },  // Always use original wire identity in envelope
 					content: [
 						{
 							tag: 'enc',
@@ -511,7 +506,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								type,
 								...(extraAttrs || {})
 							},
-							content: ciphertext  // Encrypted with encryption identity
+							content: ciphertext
 						}
 					]
 				}
@@ -783,10 +778,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
-					// WHATSMEOW: For own devices, use meMsg as main message, no DSM needed since meMsg IS the DSM
+					// For own devices: use meMsg as main message (it's already DSM)
 					createParticipantNodes(meJids, meMsg, extraAttrs),
-					// WHATSMEOW: For other devices, use main message only - no DSM for recipients
-					createParticipantNodes(otherJids, message, extraAttrs)
+					// For other devices: pass DSM so own devices of recipients get DSM
+					createParticipantNodes(otherJids, message, extraAttrs, meMsg)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)

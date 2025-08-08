@@ -447,7 +447,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						return
 					}
 					
-					// MIGRATE PN SESSION TO LID (whatsmeow MigratePNToLID pattern)
+					// PROPER SESSION MIGRATION: Create new session with migrated address
 					const fromSession = await storage.loadSession(fromAddrStr)
 					if (fromSession && fromSession.haveOpenSession()) {
 						await storage.storeSession(toAddrStr, fromSession)
@@ -462,6 +462,21 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					throw error
 				}
 			})
+		},
+		
+		/**
+		 * WIRE JID: Encrypt with separate wire and encryption identities
+		 * Following whatsmeow's encryptMessageForDeviceAndWrap approach
+		 */
+		async encryptMessageWithWire({ encryptionJid, wireJid, data }) {
+			// Use the existing encryptMessage for actual encryption
+			const result = await repository.encryptMessage({ jid: encryptionJid, data })
+			
+			// Return the result with wire JID for envelope
+			return {
+				...result,
+				wireJid
+			}
 		}
 	}
 
