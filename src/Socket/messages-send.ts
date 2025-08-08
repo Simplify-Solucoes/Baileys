@@ -452,16 +452,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					return {} as BinaryNode
 				}
 
-				// WHATSMEOW LOGIC: DSM for own devices (following send.go:1171-1177)
-				const { user: targetUser } = jidDecode(wireJid)!
-				const isOwnDevice = (targetUser === meUser || (meLidUser && targetUser === meLidUser)) &&
-								  wireJid !== meId && wireJid !== authState.creds.me?.lid
-				
+				// DSM logic only applies when dsmMessage is provided (for own devices)
 				let messageToEncrypt = patchedMessage
-				if (isOwnDevice && dsmMessage) {
-					// Use DSM for own other devices (not main device)
-					messageToEncrypt = dsmMessage
-					console.log(`📱 Using DSM for own device: ${wireJid}`)
+				if (dsmMessage) {
+					const { user: targetUser } = jidDecode(wireJid)!
+					const isOwnDevice = (targetUser === meUser || (meLidUser && targetUser === meLidUser)) &&
+									  wireJid !== meId && wireJid !== authState.creds.me?.lid
+					
+					if (isOwnDevice) {
+						// Use DSM for own other devices (not main device)
+						messageToEncrypt = dsmMessage
+						console.log(`📱 Using DSM for own device: ${wireJid}`)
+					}
 				}
 
 				const bytes = encodeWAMessage(messageToEncrypt)
@@ -471,8 +473,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// Encryption identity: what's used for actual Signal encryption
 				let encryptionIdentity = wireJid
 				
-				// Note: LID migration should only happen on receiving side, not during sending
-				// Recipients expect messages encrypted with the wire identity (PN), not LID
+				// Apply LID encryption priority (following whatsmeow's approach)
+				if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
+					try {
+						const lidStore = signalRepository.getLIDMappingStore()
+						const lidForPN = await lidStore.getLIDForPN(wireJid)
+						
+						if (lidForPN && lidForPN.includes('@lid')) {
+							// Migrate session if needed
+							await signalRepository.migrateSession(wireJid, lidForPN)
+							encryptionIdentity = lidForPN
+							console.log(`🔄 Wire-Encryption separation: ${wireJid} → ${encryptionIdentity}`)
+						}
+					} catch (error) {
+						console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)
+					}
+				}
 				
 				const { type, ciphertext } = await signalRepository.encryptMessage({ 
 					jid: encryptionIdentity,  // Use encryption identity for Signal encryption
