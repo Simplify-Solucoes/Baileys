@@ -783,8 +783,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				] = await Promise.all([
 					// WHATSMEOW: For own devices, use meMsg as main message, no DSM needed since meMsg IS the DSM
 					createParticipantNodes(meJids, meMsg, extraAttrs),
-					// WHATSMEOW: For other devices, use main message and pass DSM for their own devices
-					createParticipantNodes(otherJids, message, extraAttrs, meMsg)
+					// WHATSMEOW: For other devices, use main message only - no DSM for recipients
+					createParticipantNodes(otherJids, message, extraAttrs)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
