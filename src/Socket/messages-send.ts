@@ -428,34 +428,79 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return msgId
 	}
 
-	const createParticipantNodes = async (jids: string[], message: proto.IMessage, extraAttrs?: BinaryNode['attrs']) => {
+	const createParticipantNodes = async (
+		jids: string[], 
+		message: proto.IMessage, 
+		extraAttrs?: BinaryNode['attrs'],
+		// WHATSMEOW: DSM support for own devices
+		dsmMessage?: proto.IMessage
+	) => {
 		let patched = await patchMessageBeforeSending(message, jids)
 		if (!Array.isArray(patched)) {
 			patched = jids ? jids.map(jid => ({ recipientJid: jid, ...patched })) : [patched]
 		}
 
 		let shouldIncludeDeviceIdentity = false
+		const meId = authState.creds.me!.id
+		const { user: meUser } = jidDecode(meId)!
+		const meLidUser = authState.creds.me?.lid ? jidDecode(authState.creds.me.lid)?.user : null
 
 		const nodes = await Promise.all(
 			patched.map(async patchedMessageWithJid => {
-				const { recipientJid: jid, ...patchedMessage } = patchedMessageWithJid
-				if (!jid) {
+				const { recipientJid: wireJid, ...patchedMessage } = patchedMessageWithJid
+				if (!wireJid) {
 					return {} as BinaryNode
 				}
 
-				const bytes = encodeWAMessage(patchedMessage)
+				// WHATSMEOW LOGIC: DSM for own devices (following send.go:1171-1177)
+				const { user: targetUser } = jidDecode(wireJid)!
+				const isOwnDevice = (targetUser === meUser || (meLidUser && targetUser === meLidUser)) &&
+								  wireJid !== meId && wireJid !== authState.creds.me?.lid
+				
+				let messageToEncrypt = patchedMessage
+				if (isOwnDevice && dsmMessage) {
+					// Use DSM for own other devices (not main device)
+					messageToEncrypt = dsmMessage
+					console.log(`📱 Using DSM for own device: ${wireJid}`)
+				}
+
+				const bytes = encodeWAMessage(messageToEncrypt)
+				
+				// WHATSMEOW LOGIC: Separate wire identity and encryption identity
+				// Wire identity: what appears in the message envelope
+				// Encryption identity: what's used for actual Signal encryption
+				let encryptionIdentity = wireJid
+				
+				// Apply LID encryption priority (following whatsmeow's approach)
+				if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
+					try {
+						const lidStore = signalRepository.getLIDMappingStore()
+						const lidForPN = await lidStore.getLIDForPN(wireJid)
+						
+						if (lidForPN && lidForPN.includes('@lid')) {
+							// Migrate session if needed
+							await signalRepository.migrateSession(wireJid, lidForPN)
+							encryptionIdentity = lidForPN
+							console.log(`🔄 Wire-Encryption separation: ${wireJid} → ${encryptionIdentity}`)
+						}
+					} catch (error) {
+						console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)
+					}
+				}
 				
 				const { type, ciphertext } = await signalRepository.encryptMessage({ 
-					jid, 
+					jid: encryptionIdentity,  // Use encryption identity for Signal encryption
 					data: bytes
 				})
+				
 				if (type === 'pkmsg') {
 					shouldIncludeDeviceIdentity = true
 				}
 
+				// WHATSMEOW: Use wire identity in message envelope
 				const node: BinaryNode = {
 					tag: 'to',
-					attrs: { jid },
+					attrs: { jid: wireJid },  // Wire identity in envelope
 					content: [
 						{
 							tag: 'enc',
@@ -464,7 +509,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								type,
 								...(extraAttrs || {})
 							},
-							content: ciphertext
+							content: ciphertext  // Encrypted with encryption identity
 						}
 					]
 				}
@@ -736,8 +781,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
+					// WHATSMEOW: For own devices, use meMsg as main message, no DSM needed since meMsg IS the DSM
 					createParticipantNodes(meJids, meMsg, extraAttrs),
-					createParticipantNodes(otherJids, message, extraAttrs)
+					// WHATSMEOW: For other devices, use main message and pass DSM for their own devices
+					createParticipantNodes(otherJids, message, extraAttrs, meMsg)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
