@@ -471,22 +471,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// Encryption identity: what's used for actual Signal encryption
 				let encryptionIdentity = wireJid
 				
-				// Apply LID encryption priority (following whatsmeow's approach)
-				if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
-					try {
-						const lidStore = signalRepository.getLIDMappingStore()
-						const lidForPN = await lidStore.getLIDForPN(wireJid)
-						
-						if (lidForPN && lidForPN.includes('@lid')) {
-							// Migrate session if needed
-							await signalRepository.migrateSession(wireJid, lidForPN)
-							encryptionIdentity = lidForPN
-							console.log(`🔄 Wire-Encryption separation: ${wireJid} → ${encryptionIdentity}`)
-						}
-					} catch (error) {
-						console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)
-					}
-				}
+				// Note: LID migration should only happen on receiving side, not during sending
+				// Recipients expect messages encrypted with the wire identity (PN), not LID
 				
 				const { type, ciphertext } = await signalRepository.encryptMessage({ 
 					jid: encryptionIdentity,  // Use encryption identity for Signal encryption
