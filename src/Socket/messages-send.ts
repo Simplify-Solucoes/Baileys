@@ -530,7 +530,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			targetDevices
 		}: MessageRelayOptions
 	) => {
-		const meId = authState.creds.me!.id
+		let meId = authState.creds.me!.id
+		let meLid = authState.creds.me?.lid
 
 		let shouldIncludeDeviceIdentity = false
 
@@ -540,6 +541,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isStatus = jid === statusJid
 		const isLid = server === 'lid'
 		const isNewsletter = server === 'newsletter'
+
+		// WHATSMEOW PATTERN: Use LID identity when sending to HiddenUserServer (lid)
+		let ownId = meId
+		if (isLid && meLid) {
+			ownId = meLid
+			logger.debug({ to: jid, ownId }, 'Using LID identity for HiddenUserServer message')
+		}
 
 		msgId = msgId || generateMessageIDV2(sock.user?.id)
 		useUserDevicesCache = useUserDevicesCache !== false
@@ -723,7 +731,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
 			} else {
-				const { user: meUser } = jidDecode(meId)!
+				// WHATSMEOW PATTERN: Extract user from ownId (which might be LID)
+				const { user: meUser } = jidDecode(ownId)!
 
 				if (!participant) {
 					// If targetDevices is specified (for receipt timeout resends), use only those
@@ -747,7 +756,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 
 						if (additionalAttributes?.['category'] !== 'peer') {
-							const additionalDevices = await getUSyncDevices([meId, jid], !!useUserDevicesCache, true)
+							// WHATSMEOW PATTERN: Use ownId (which might be LID) for device resolution
+							const additionalDevices = await getUSyncDevices([ownId, jid], !!useUserDevicesCache, true)
 							devices.push(...additionalDevices)
 						}
 					}
@@ -756,8 +766,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const allJids: string[] = []
 				const meJids: string[] = []
 				const otherJids: string[] = []
+				// WHATSMEOW PATTERN: Also need to check against both PN and LID users
+				const { user: mePnUser } = jidDecode(meId)!
+				const { user: meLidUser } = meLid ? jidDecode(meLid)! : { user: null }
+				
 				for (const { user, device } of devices) {
-					const isMe = user === meUser
+					// Check if this is our device (could match either PN or LID user)
+					const isMe = user === meUser || user === mePnUser || (meLidUser && user === meLidUser)
 					const jid = jidEncode(
 						isMe && isLid ? authState.creds?.me?.lid!.split(':')[0] || user : user,
 						isLid ? 'lid' : 's.whatsapp.net',
