@@ -71,9 +71,20 @@ export class LIDMappingStore {
         const decoded = jidDecode(pn)
         if (!decoded) return null
         
-        // Direct Redis lookup by user portion
+        // Try direct lookup by user portion first
         const stored = await this.keys.get('lid-mapping', [decoded.user])
-        const lidUser = stored[decoded.user]
+        let lidUser = stored[decoded.user]
+        
+        // CRITICAL FIX: If not found, try to see if this is actually a LID being passed as PN
+        if (!lidUser && decoded.user.match(/^\d{12,15}$/)) {
+            // This might be a base LID, check if we have the reverse mapping
+            const reverseStored = await this.keys.get('lid-mapping', [`${decoded.user}_1`])
+            const pnUser = reverseStored[`${decoded.user}_1`]
+            if (pnUser) {
+                // This is a LID that has a PN mapping, return it as-is since it's already a LID
+                lidUser = decoded.user
+            }
+        }
         
         if (!lidUser || typeof lidUser !== 'string') return null
         
@@ -109,6 +120,26 @@ export class LIDMappingStore {
         return decoded.device !== undefined
             ? `${pnUser}:${decoded.device}@s.whatsapp.net`
             : `${pnUser}@s.whatsapp.net`
+    }
+
+    /**
+     * Check if a LID exists in our mappings (for validation)
+     * This helps when we have a direct LID contact and need to verify it exists
+     */
+    async isLIDMapped(lid: string): Promise<boolean> {
+        if (!isLidUser(lid)) return false
+        
+        const decoded = jidDecode(lid)
+        if (!decoded) return false
+        
+        // Check both forward and reverse mappings
+        const [forwardStored, reverseStored] = await Promise.all([
+            this.keys.get('lid-mapping', [decoded.user]),
+            this.keys.get('lid-mapping', [`${decoded.user}_1`])
+        ])
+        
+        // LID is mapped if either direction exists
+        return !!(forwardStored[decoded.user] || reverseStored[`${decoded.user}_1`])
     }
 
     /**

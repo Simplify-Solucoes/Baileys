@@ -369,8 +369,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 										logger.debug({ jid, lidForPN }, 'Found migrated LID session during retry, skipping PN fetch')
 									}
 								}
-							} catch (error) {
-								logger.warn({ jid, error }, 'Failed to check LID mapping during retry')
+							} catch (err: any) {
+								logger.warn({ jid, err: err.message }, 'Failed to check LID mapping during session assertion')
+							}
+						}
+						
+						// CRITICAL FIX: Check for PN session if LID session missing 
+						if (!hasSession && jid.includes('@lid')) {
+							try {
+								const pnForLID = await lidMapping.getPNForLID(jid)
+								if (pnForLID && pnForLID.includes('@s.whatsapp.net')) {
+									const pnSignalId = signalRepository.jidToSignalProtocolAddress(pnForLID)
+									const pnSessions = await authState.keys.get('session', [pnSignalId])
+									hasSession = !!pnSessions[pnSignalId]
+									
+									if (hasSession) {
+										logger.debug({ jid, pnForLID }, 'Found PN session for LID during retry, skipping LID fetch')
+									}
+								}
+							} catch (err: any) {
+								logger.warn({ jid, err: err.message }, 'Failed to check PN mapping during session assertion')
 							}
 						}
 						
