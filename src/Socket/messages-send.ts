@@ -1578,9 +1578,30 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					additionalNodes
 				})
 				
-				// Cache message using simplified whatsmeow approach
-				messageCache.addRecentMessage(fullMsg.key.remoteJid!, fullMsg.key.id!, fullMsg.message!)
-				logger.trace({ remoteJid: fullMsg.key.remoteJid, msgId: fullMsg.key.id }, 'Message cached before sending')
+				// Cache message using simplified whatsmeow approach with wire-encryption separation
+				const wireJid = fullMsg.key.remoteJid!
+				const msgId = fullMsg.key.id!
+				const message = fullMsg.message!
+				
+				// Cache with wire JID (primary)
+				messageCache.addRecentMessage(wireJid, msgId, message)
+				logger.trace({ remoteJid: wireJid, msgId }, 'Message cached with wire JID')
+				
+				// WHATSMEOW PATTERN: Also cache with LID address if different from wire address
+				if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
+					try {
+						const lidStore = signalRepository.getLIDMappingStore()
+						const lidForPN = await lidStore.getLIDForPN(wireJid)
+						
+						if (lidForPN && lidForPN.includes('@lid') && lidForPN !== wireJid) {
+							// Cache the same message with LID address for retry receipt compatibility
+							messageCache.addRecentMessage(lidForPN, msgId, message)
+							logger.trace({ lidJid: lidForPN, msgId }, 'Message also cached with LID address')
+						}
+					} catch (error) {
+						logger.warn({ wireJid, error }, 'Failed to cache with LID address')
+					}
+				}
 
 				if (config.emitOwnEvents) {
 					process.nextTick(() => {
