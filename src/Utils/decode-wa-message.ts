@@ -224,15 +224,9 @@ export const decryptMessageNode = (
 								break
 							case 'pkmsg':
 							case 'msg':
-								// Apply WhatsApp's LID priority system
+								// WHATSMEOW EXACT: Simple LID priority system (message.go:948-961)
 								const { addressingMode, senderAlt } = extractAddressingContext(stanza, sender)
-								const { encryptionJid: senderEncryptionJid, shouldMigrate } = await determineLIDEncryptionJid(
-									sender,
-									senderAlt,
-									repository,
-									logger,
-									meId
-								)
+								let senderEncryptionJid = sender
 								
 								// Store LID mapping when detected from message metadata
 								if (senderAlt && isLidUser(senderAlt) && isJidUser(sender)) {
@@ -244,45 +238,35 @@ export const decryptMessageNode = (
 									}
 								}
 								
-								// CRITICAL FIX: NO session migration during INCOMING message decryption
-								// Session migration should only happen during OUTGOING encryption, not incoming decryption
-								// When a device replies, we decrypt using their chosen identity without affecting other devices
-								if (shouldMigrate) {
-									// Just log the intended migration - don't execute it during decryption
-									logger.debug({ 
-										sender, 
-										lid: senderEncryptionJid,
-										action: 'decrypt-only',
-										note: 'Session migration skipped for incoming message to prevent multi-device corruption'
-									}, 'Incoming decryption detected LID switch but migration skipped')
+								// WHATSMEOW EXACT: LID priority logic (message.go:949-961)
+								if (isJidUser(sender) && !sender.includes('bot')) {
+									if (senderAlt && isLidUser(senderAlt)) {
+										// PRIORITY 1: Use LID from message metadata (exact whatsmeow pattern)
+										senderEncryptionJid = senderAlt
+										await repository.migrateSession(sender, senderAlt)
+									} else {
+										// PRIORITY 2: Check stored LID mapping
+										try {
+											const lidStore = repository.getLIDMappingStore()
+											const storedLid = await lidStore.getLIDForPN(sender)
+											
+											if (storedLid) {
+												await repository.migrateSession(sender, storedLid)
+												senderEncryptionJid = storedLid
+												// Update senderAlt for consistency (whatsmeow pattern)
+												// info.SenderAlt = lid
+											}
+										} catch (lidError: any) {
+											logger.error({ sender, error: lidError.message }, 'Failed to get LID for PN during decryption')
+										}
+									}
 								}
 								
 								logger.debug({ 
 									originalSender: sender,
 									finalSender: senderEncryptionJid,
 									addressingMode
-								}, 'Using LID priority for decryption')
-								
-								// WHATSMEOW ALIGNMENT: Migrate session when LID is discovered during decryption
-								// This prevents encryption-time race conditions
-								if (senderEncryptionJid !== sender && senderEncryptionJid.includes('@lid')) {
-									try {
-										logger.debug({
-											pnJid: sender,
-											lidJid: senderEncryptionJid,
-											action: 'session-migration-check'
-										}, 'Checking for session migration during decryption')
-										
-										await repository.migrateSession(sender, senderEncryptionJid)
-										logger.debug('Session migration completed during decryption')
-									} catch (migrationError: any) {
-										logger.warn({
-											error: migrationError?.message || migrationError,
-											pnJid: sender,
-											lidJid: senderEncryptionJid
-										}, 'Session migration failed during decryption - continuing with available session')
-									}
-								}
+								}, 'WHATSMEOW: Determined encryption JID for decryption')
 								
 								// WHATSMEOW APPROACH: Trust the determined encryption JID, no fallback
 								msgBuffer = await repository.decryptMessage({

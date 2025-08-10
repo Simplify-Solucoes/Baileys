@@ -166,9 +166,9 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				return cachedResult
 			}
 			
-			// WHATSMEOW PATTERN: Concurrency protection for multi-device sessions
-			// Prevent multiple concurrent decryptions from the same JID that could corrupt state
-			const deviceLockKey = `${jid.split(':')[0]}` // Group by user, not device
+			// WHATSMEOW PATTERN: Device-specific concurrency protection
+			// Each device should have its own session lock to prevent multi-device blocking
+			const deviceLockKey = jid // Use full JID including device for proper isolation
 			const existingDecryption = sessionDecryptionLocks.get(deviceLockKey)
 			if (existingDecryption && type === 'pkmsg') {
 				console.log(`⏳ Waiting for concurrent PreKey decryption to complete for ${jid}`)
