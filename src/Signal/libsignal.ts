@@ -15,7 +15,7 @@ import type { StorageType } from 'libsignal'
 
 export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository {
 	const lidMapping = new LIDMappingStore(auth.keys as SignalKeyStoreWithTransaction)
-	const storage : StorageType & SenderKeyStore = signalStorage(auth)
+	const storage : StorageType & SenderKeyStore = signalStorage(auth, lidMapping)
 	
 	// Initialize privacy token manager for session migration (following whatsmeow approach)
 	const privacyTokenManager = new PrivacyTokenManager(auth.keys as SignalKeyStoreWithTransaction, lidMapping)
@@ -500,17 +500,58 @@ const jidToSignalProtocolAddress = (jid: string) => {
 	return new libsignal.ProtocolAddress(signalUser, device || 0)
 }
 
+const signalProtocolAddressToJid = (encodedAddress: string) => {
+	// Convert signal protocol address back to JID format
+	// Handle both standard and LID formats
+	const parts = encodedAddress.split('.')
+	let user = parts[0] || ''
+	const device = parts[1]
+	
+	// Check for LID format (ends with _1)
+	if (user.endsWith('_1')) {
+		user = user.slice(0, -2) // Remove _1 suffix
+		const baseJid = device && device !== '0' ? `${user}:${device}@lid` : `${user}@lid`
+		return baseJid
+	} else {
+		// Standard PN format
+		const baseJid = device && device !== '0' ? `${user}:${device}@s.whatsapp.net` : `${user}@s.whatsapp.net`
+		return baseJid
+	}
+}
+
 const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName => {
 	return new SenderKeyName(group, jidToSignalProtocolAddress(user))
 }
 
-function signalStorage({ creds, keys }: SignalAuthState): StorageType & SenderKeyStore & Record<string, any> {
+function signalStorage({ creds, keys }: SignalAuthState, lidMapping: LIDMappingStore): StorageType & SenderKeyStore & Record<string, any> {
 	return {
 		loadSession: async (id: string) => {
 			try {
 				console.log(`🔍 Loading session: ${id}`)
-				const { [id]: sess } = await keys.get('session', [id])
-				console.log(`📦 Session result for ${id}: ${sess ? 'FOUND' : 'NOT FOUND'}`)
+				
+				// WHATSMEOW GUARD: Redirect PN session requests to LID sessions when available
+				let actualId = id
+				if (id.includes('@s.whatsapp.net')) {
+					try {
+						const jid = signalProtocolAddressToJid(id)
+						const lidForPN = await lidMapping.getLIDForPN(jid)
+						
+						if (lidForPN && lidForPN.includes('@lid')) {
+							const lidId = jidToSignalProtocolAddress(lidForPN).toString()
+							// Check if LID session exists
+							const { [lidId]: lidSess } = await keys.get('session', [lidId])
+							if (lidSess) {
+								console.log(`🔄 Session redirect: ${id} → ${lidId}`)
+								actualId = lidId
+							}
+						}
+					} catch (error) {
+						console.warn(`⚠️ LID lookup failed for session ${id}:`, error)
+					}
+				}
+				
+				const { [actualId]: sess } = await keys.get('session', [actualId])
+				console.log(`📦 Session result for ${actualId}: ${sess ? 'FOUND' : 'NOT FOUND'}`)
 				if (sess) {
 					return libsignal.SessionRecord.deserialize(sess)
 				}
