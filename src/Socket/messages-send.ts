@@ -818,8 +818,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 
 						if (additionalAttributes?.['category'] !== 'peer') {
-							// WHATSMEOW PATTERN: Use ownId (which might be LID) for device resolution
-							const additionalDevices = await getUSyncDevices([ownId, jid], !!useUserDevicesCache, true)
+							// CRITICAL FIX: Force device list refresh for multi-device scenarios
+							// When replying to messages, we must ensure we have the latest device list
+							// to reach ALL devices, not just the one that sent the last message
+							const forceRefresh = true // Always refresh devices for replies
+							const additionalDevices = await getUSyncDevices([ownId, jid], !forceRefresh, true)
 							devices.push(...additionalDevices)
 						}
 					}

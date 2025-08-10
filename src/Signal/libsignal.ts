@@ -224,13 +224,38 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 							if (backupSessionData) {
 								console.log(`🔄 Restoring backed up session alongside new PreKey session: ${jid}`)
 								try {
-									// WHATSMEOW PATTERN: Simple session coexistence - PreKey session is established
-									// The backup session exists but we don't need complex merging
-									console.log(`✅ PreKey session established, backup available: ${jid}`)
+									// Get the current session record after PreKey processing
+									const currentRecord = await storage.loadSession(addr.toString())
 									
-									// Instead of complex merging, we'll let the natural session evolution handle this
-									// The new PreKey session will be used for new messages
-									// Old sessions remain accessible through libsignal's natural mechanisms
+									if (currentRecord) {
+										// Deserialize the backup session
+										const backupSession = libsignal.SessionRecord.deserialize(backupSessionData)
+										
+										// CRITICAL: Merge sessions by copying the backup session's states
+										// into the current record. This preserves both old and new sessions.
+										const backupStates = (backupSession as any).sessions || []
+										const currentStates = (currentRecord as any).sessions || []
+										
+										// Only add backup states that aren't already present
+										for (const backupState of backupStates) {
+											const stateExists = currentStates.some((currentState: any) => {
+												// Compare session states by their chain keys or other unique identifiers
+												return JSON.stringify(currentState) === JSON.stringify(backupState)
+											})
+											
+											if (!stateExists) {
+												currentStates.push(backupState)
+												console.log(`✅ Restored session state to coexist with PreKey session: ${jid}`)
+											}
+										}
+										
+										// Update the session record with merged states
+										;(currentRecord as any).sessions = currentStates
+										
+										// Store the updated session record
+										await storage.storeSession(addr.toString(), currentRecord)
+										console.log(`💾 Session coexistence established for ${jid}`)
+									}
 								} catch (restoreError: any) {
 									console.warn(`⚠️ Session restore failed for ${jid}:`, restoreError?.message || restoreError)
 									// Continue with PreKey session only if restore fails
