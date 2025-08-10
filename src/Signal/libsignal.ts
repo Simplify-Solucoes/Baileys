@@ -362,6 +362,9 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 							} else {
 								console.log(`⚠️ LID session not found: ${lidJid}`)
 								console.log(`🔄 Migration will be triggered by incoming message decryption`)
+								// CRITICAL FIX: Fallback to original PN address when no LID session exists
+								console.log(`📤 Falling back to PN for encryption: ${jid}`)
+								encryptionJid = jid
 							}
 						}
 					}
