@@ -439,19 +439,16 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					const fromAddrStr = fromAddr.toString()
 					const toAddrStr = toAddr.toString()
 					
-					// Check if destination already has a session - if yes, skip migration
-					const toSession = await storage.loadSession(toAddrStr)
-					if (toSession && toSession.haveOpenSession()) {
-						console.log(`✅ LID session already exists, skipping migration`)
-						markAsMigrated(migrationKey)
-						return
-					}
+					// REDIS: Skip session existence check - Redis SET operations are atomic and overwrite existing keys
 					
-					// PROPER SESSION MIGRATION: Create new session with migrated address
+					// WHATSMEOW EXACT: MOVE session from PN to LID (copy + delete original)
 					const fromSession = await storage.loadSession(fromAddrStr)
 					if (fromSession && fromSession.haveOpenSession()) {
+						// Copy session to LID address
 						await storage.storeSession(toAddrStr, fromSession)
-						console.log(`✅ Migrated PN session to LID: ${fromAddrStr} → ${toAddrStr}`)
+						// CRITICAL: Delete original PN session to prevent state sharing (following removePreKey pattern)
+						await auth.keys.set({ session: { [fromAddrStr]: null } })
+						console.log(`✅ Moved PN session to LID: ${fromAddrStr} → ${toAddrStr}`)
 						markAsMigrated(migrationKey)
 					} else {
 						console.log(`ℹ️ No PN session to migrate: ${fromJid}`)
