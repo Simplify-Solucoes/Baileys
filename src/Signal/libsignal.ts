@@ -360,9 +360,10 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 									console.log(`✅ Session migrated successfully: ${jid} → ${lidJid}`)
 								} catch (migrationError: any) {
 									console.error(`❌ Session migration failed: ${jid} → ${lidJid}:`, migrationError?.message || migrationError)
-									// Fallback to original JID if migration fails
-									console.log(`🔄 Falling back to original JID: ${jid}`)
-									encryptionJid = jid
+									// WHATSMEOW ALIGNMENT: Don't fall back to PN during encryption
+									// This breaks multi-device session consistency
+									console.log(`🔑 LID session required but migration failed - session establishment needed: ${lidJid}`)
+									// Keep using LID address - the "No session" error will trigger proper session establishment
 								}
 							} else {
 								console.log(`⚡ LID session already exists, skipping migration: ${jid} → ${lidJid}`)
@@ -386,7 +387,15 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			if (!targetSession || !targetSession.haveOpenSession()) {
 				console.log(`⚠️ No active session at ${encryptionJid}`)
 				
-				// WHATSMEOW: NO reactive session migration - sessions stay where they are
+				// WHATSMEOW ALIGNMENT: NEVER fallback from LID to PN during encryption
+				// This breaks multi-device session isolation
+				
+				// For LID addresses, provide more context for session establishment
+				if (encryptionJid.includes('@lid')) {
+					throw new Error(`No LID session available for ${encryptionJid}. Key fetching and session establishment required.`)
+				} else {
+					throw new Error(`No session available for ${encryptionJid}`)
+				}
 			} else {
 				// Session exists - validate it's not corrupted
 				console.log(`✅ Active session found for ${encryptionJid}`)
@@ -413,46 +422,26 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				console.error(`❌ libsignal encryption failed for ${encryptionJid}:`, encryptionError.message)
 				console.error(`Session address: ${addr.toString()}`)
 				
-				// CRITICAL FIX: Handle session corruption from migration
-				if (encryptionError.message?.includes('Assertion failed') || 
-				    encryptionError.message?.includes('Invalid argument')) {
-					console.warn(`🔧 Session corruption detected, attempting to recreate session: ${encryptionJid}`)
-					
-					try {
-						// Delete the corrupted session
-						await auth.keys.set({ session: { [addr.toString()]: null } })
-						console.log(`🗑️ Corrupted session deleted: ${encryptionJid}`)
-						
-						// For LID addresses, try to fall back to PN if available
-						if (encryptionJid.includes('@lid')) {
-							// Extract PN equivalent
-							const lidParts = jidDecode(encryptionJid)
-							if (lidParts) {
-								const pnJid = `${lidParts.user}${lidParts.device ? ':' + lidParts.device : ''}@s.whatsapp.net`
-								console.log(`🔄 Attempting fallback to PN session: ${pnJid}`)
-								
-								const pnAddr = jidToSignalProtocolAddress(pnJid)
-								const pnSession = await storage.loadSession(pnAddr.toString())
-								
-								if (pnSession && pnSession.haveOpenSession()) {
-									console.log(`✅ PN session found, using for encryption: ${pnJid}`)
-									const pnCipher = new libsignal.SessionCipher(storage, pnAddr)
-									const { type: sigType, body } = await pnCipher.encrypt(data)
-									const type = sigType === 3 ? 'pkmsg' : 'msg'
-									return { type, ciphertext: Buffer.from(body as any, 'binary') }
-								}
-							}
-						}
-						
-						// If no fallback available, the error stands
-						console.error(`❌ No fallback session available for ${encryptionJid}`)
-						
-					} catch (recoveryError: any) {
-						console.error(`❌ Session recovery failed: ${recoveryError.message}`)
-					}
+				// WHATSMEOW ALIGNMENT: Specific error handling patterns
+				if (encryptionError.message?.includes('Assertion failed')) {
+					console.error(`🚨 ASSERTION FAILED: Session corruption detected for ${encryptionJid}`)
+					console.error(`🔧 This indicates invalid session state - session needs recreation`)
+					throw new Error(`Session corruption detected for ${encryptionJid}: ${encryptionError.message}`)
 				}
 				
-				// WHATSMEOW: NO fallback encryption attempts - fail fast
+				if (encryptionError.message?.includes('Invalid argument')) {
+					console.error(`🚨 INVALID ARGUMENT: Session parameters invalid for ${encryptionJid}`)
+					throw new Error(`Invalid session parameters for ${encryptionJid}: ${encryptionError.message}`)
+				}
+				
+				if (encryptionError.message?.includes('No session')) {
+					console.error(`🚨 NO SESSION: Session does not exist for ${encryptionJid}`)
+					throw new Error(`Session does not exist for ${encryptionJid}: ${encryptionError.message}`)
+				}
+				
+				// WHATSMEOW ALIGNMENT: Don't attempt automatic session recreation during encryption
+				// Session establishment should happen at the protocol level, not during encryption
+				console.error(`🔧 Encryption failed - session needs to be established through proper key exchange`)
 				throw encryptionError
 			}
 		},
@@ -630,27 +619,34 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						return
 					}
 					
-					// CRITICAL FIX: DO NOT copy session bytes between different address formats
-					// This violates libsignal's internal state consistency and causes "Assertion failed"
+					// WHATSMEOW ALIGNMENT: Actually migrate session data from PN to LID
+					// This is required for multi-device session consistency
 					
 					const fromSession = await storage.loadSession(fromAddrStr)
 					if (fromSession && fromSession.haveOpenSession()) {
-						console.log(`⚠️ Session exists at ${fromJid} but LID migration should NOT copy session data`)
-						console.log(`🔧 WhatsApp protocol requires fresh session establishment for LID addresses`)
+						console.log(`🔄 Migrating session data: ${fromJid} → ${toJid}`)
 						
-						// WHATSMEOW APPROACH: Just mark the mapping without copying corrupted session state
-						// The session will be naturally established via PreKey exchange when needed
-						
-						// Store LID mapping to enable future LID-based communication
-						await lidMapping.storeLIDPNMapping(toJid, fromJid)
-						console.log(`🔗 LID mapping stored: ${fromJid} ↔ ${toJid}`)
-						
-						// CRITICAL: Keep PN session intact - do NOT delete it
-						// LID session will be created fresh when first message arrives via PreKey
-						console.log(`✅ PN session preserved, LID session will be established naturally: ${fromJid}`)
-						
-						markAsMigrated(deviceSpecificMigrationKey)
-						return
+						// WHATSMEOW APPROACH: Copy session data to LID address
+						try {
+							// Create new session at LID address with same session data
+							// Use the storage interface directly like storeSession does
+							await storage.storeSession(toAddrStr, fromSession)
+							
+							console.log(`✅ Session data migrated successfully: ${fromJid} → ${toJid}`)
+							
+							// Store the mapping after successful session migration
+							await lidMapping.storeLIDPNMapping(toJid, fromJid)
+							console.log(`🔗 LID mapping stored after session migration: ${fromJid} ↔ ${toJid}`)
+							
+							markAsMigrated(deviceSpecificMigrationKey)
+							return
+							
+						} catch (migrationError) {
+							console.error(`❌ Session migration failed: ${fromJid} → ${toJid}:`, migrationError)
+							// Still store mapping even if session migration fails
+							await lidMapping.storeLIDPNMapping(toJid, fromJid)
+							throw migrationError
+						}
 					}
 					
 					// If no session exists, just store the mapping
