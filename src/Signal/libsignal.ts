@@ -50,6 +50,14 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		updateAgeOnHas: false,
 	})
 	
+	// WHATSMEOW PATTERN: Session concurrency protection for multi-device scenarios
+	const sessionDecryptionLocks = new LRUCache<string, Promise<Buffer>>({
+		max: 100, // Track last 100 concurrent decryptions
+		ttl: 30 * 1000, // 30 seconds TTL - longer than any normal decryption
+		updateAgeOnGet: false,
+		updateAgeOnHas: false,
+	})
+	
 	// Clean, simple helper functions using proper LRU cache
 	const isRecentlyMigrated = (migrationKey: string): boolean => {
 		return migratedSessionsCache.has(migrationKey) // Automatic TTL + LRU handling
@@ -275,6 +283,20 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				return cachedResult
 			}
 			
+			// WHATSMEOW PATTERN: Concurrency protection for multi-device sessions
+			// Prevent multiple concurrent decryptions from the same JID that could corrupt state
+			const deviceLockKey = `${jid.split(':')[0]}` // Group by user, not device
+			const existingDecryption = sessionDecryptionLocks.get(deviceLockKey)
+			if (existingDecryption && type === 'pkmsg') {
+				console.log(`⏳ Waiting for concurrent PreKey decryption to complete for ${jid}`)
+				try {
+					await existingDecryption
+				} catch (error) {
+					// If concurrent decryption failed, continue with our attempt
+					console.warn(`⚠️ Concurrent decryption failed for ${jid}, proceeding`)
+				}
+			}
+			
 			// WHATSMEOW PATTERN: Validate session exists before decryption
 			const sessionValidation = await validateSessionExists(jid)
 			if (!sessionValidation.exists && type === 'msg') {
@@ -282,8 +304,16 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				throw new Error(`Cannot decrypt message: ${sessionValidation.reason}`)
 			}
 			
-			// Use transaction to ensure atomicity
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+			// WHATSMEOW EXACT: Buffered decryption with proper transaction handling
+			// This prevents session corruption during multi-device PreKey processing
+			const decryptionPromise = (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+				// Double-check cache inside transaction to prevent race conditions
+				const innerCachedResult = decryptionCache.get(cacheKey)
+				if (innerCachedResult) {
+					console.log(`🔄 Using inner cached decryption for ${jid} (${ciphertextHash})`)
+					return innerCachedResult
+				}
+				
 				const addr = jidToSignalProtocolAddress(jid)
 				const session = new libsignal.SessionCipher(storage, addr)
 				
@@ -292,6 +322,8 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					switch (type) {
 						case 'pkmsg':
 							console.log(`🔐 Decrypting PreKey message from ${jid}`)
+							// WHATSMEOW PATTERN: PreKey messages are handled with special session management
+							// The session builder automatically closes old sessions when processing PreKey bundles
 							result = await session.decryptPreKeyWhisperMessage(ciphertext)
 							break
 						case 'msg':
@@ -301,19 +333,46 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						default:
 							throw new Error(`Unknown message type: ${type}`)
 					}
-				} catch (decryptError) {
+					
+					// WHATSMEOW PATTERN: Only cache successful decryptions inside transaction
+					// This ensures cache consistency with session state
+					decryptionCache.set(cacheKey, result)
+					console.log(`✅ Decryption cached for ${jid} (${ciphertextHash})`)
+					
+					return result
+					
+				} catch (decryptError: any) {
 					console.error(`❌ Decryption failed for ${jid}: ${decryptError}`)
-					// Clear any corrupt session state to force recreation
+					
+					// WHATSMEOW PATTERN: Clear cache on failure to prevent invalid state
 					decryptionCache.delete(cacheKey)
+					
+					// Check if this is a session corruption issue
+					if (decryptError.message?.includes('MAC verification failed') || 
+					    decryptError.message?.includes('Bad message') ||
+					    decryptError.message?.includes('Duplicate message')) {
+						console.warn(`⚠️ Session corruption detected for ${jid}, may need recreation`)
+					}
+					
 					throw decryptError
 				}
-				
-				// Cache the decryption result to prevent reprocessing
-				decryptionCache.set(cacheKey, result)
-				console.log(`✅ Decryption cached for ${jid} (${ciphertextHash})`)
-				
-				return result
 			})
+			
+			// Store the decryption promise for concurrency control
+			if (type === 'pkmsg') {
+				sessionDecryptionLocks.set(deviceLockKey, decryptionPromise)
+			}
+			
+			try {
+				const result = await decryptionPromise
+				// Clean up the lock on success
+				sessionDecryptionLocks.delete(deviceLockKey)
+				return result
+			} catch (error) {
+				// Clean up the lock on failure
+				sessionDecryptionLocks.delete(deviceLockKey)
+				throw error
+			}
 		},
 		async encryptMessage({ jid, data }) {
 			// WHATSMEOW EXACT LOGIC: Always prefer LID when available
@@ -509,6 +568,39 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		 */
 		shouldRecreateSession(jid: string, retryCount: number) {
 			return shouldRecreateSession(jid, retryCount)
+		},
+		/**
+		 * WHATSMEOW PATTERN: Force session recreation when double ratchet becomes unstable
+		 */
+		async recreateSession(jid: string, reason: string = 'manual recreation') {
+			const addr = jidToSignalProtocolAddress(jid)
+			const addrStr = addr.toString()
+			
+			console.log(`🔄 Recreating session for ${jid}: ${reason}`)
+			
+			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+				try {
+					// Delete existing session
+					await auth.keys.set({ session: { [addrStr]: null } })
+					
+					// Clear decryption cache for this JID to prevent stale data
+					const keysToDelete: string[] = []
+					decryptionCache.forEach((_, key) => {
+						if (key.startsWith(jid + ':')) {
+							keysToDelete.push(key)
+						}
+					})
+					keysToDelete.forEach(key => decryptionCache.delete(key))
+					
+					// Update recreation history
+					sessionRecreationHistory.set(jid, Date.now())
+					
+					console.log(`✅ Session recreated for ${jid}`)
+				} catch (error) {
+					console.error(`❌ Session recreation failed for ${jid}:`, error)
+					throw error
+				}
+			})
 		},
 		/**
 		 * WHATSMEOW EXACT: MigratePNToLID - ONE-WAY migration from PN to LID only
