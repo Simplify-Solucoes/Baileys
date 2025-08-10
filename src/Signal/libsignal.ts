@@ -444,9 +444,14 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					// WHATSMEOW EXACT: MOVE session from PN to LID (copy + delete original)
 					const fromSession = await storage.loadSession(fromAddrStr)
 					if (fromSession && fromSession.haveOpenSession()) {
-						// Copy session to LID address
-						await storage.storeSession(toAddrStr, fromSession)
-						// CRITICAL: Delete original PN session to prevent state sharing (following removePreKey pattern)
+						// CRITICAL: Create independent session copy via serialize/deserialize
+						// This prevents multiple devices from sharing the same session object reference
+						const serializedSession = fromSession.serialize()
+						const independentSession = libsignal.SessionRecord.deserialize(serializedSession)
+						
+						// Store independent session copy to LID address
+						await storage.storeSession(toAddrStr, independentSession)
+						// Delete original PN session to prevent state sharing
 						await auth.keys.set({ session: { [fromAddrStr]: null } })
 						console.log(`✅ Moved PN session to LID: ${fromAddrStr} → ${toAddrStr}`)
 						markAsMigrated(migrationKey)
