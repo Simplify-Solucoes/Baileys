@@ -521,10 +521,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						const lidForPN = await lidStore.getLIDForPN(wireJid)
 						
 						if (lidForPN && lidForPN.includes('@lid')) {
-							// Migrate session from PN to LID
-							await signalRepository.migrateSession(wireJid, lidForPN)
+							// Check if we need to migrate (same logic as receive)
+							const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
+							const lidSessions = await authState.keys.get('session', [lidSignalId])
+							const hasLIDSession = !!lidSessions[lidSignalId]
+							
+							if (!hasLIDSession) {
+								// WHATSMEOW PATTERN: Only migrate when switching to LID for first time
+								await signalRepository.migrateSession(wireJid, lidForPN)
+								console.log(`🔄 Wire-Encryption separation (migrated): ${wireJid} → ${lidForPN}`)
+							} else {
+								console.log(`🔄 Wire-Encryption separation (existing): ${wireJid} → ${lidForPN}`)
+							}
+							
 							encryptionJid = lidForPN
-							console.log(`🔄 Wire-Encryption separation: ${wireJid} → ${encryptionJid}`)
 						}
 					} catch (error) {
 						console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)

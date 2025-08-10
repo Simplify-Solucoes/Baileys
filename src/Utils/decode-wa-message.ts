@@ -244,10 +244,11 @@ export const decryptMessageNode = (
 									}
 								}
 								
-								// Trigger session migration if needed
-								if (shouldMigrate && senderEncryptionJid !== sender) {
+								// WHATSMEOW PATTERN: Always migrate when shouldMigrate is true
+								if (shouldMigrate) {
 									try {
 										await repository.migrateSession(sender, senderEncryptionJid)
+										logger.debug({ sender, lid: senderEncryptionJid }, 'Session migration triggered')
 									} catch (error) {
 										logger.error({ sender, lid: senderEncryptionJid, error }, 'Session migration failed')
 									}
@@ -259,36 +260,12 @@ export const decryptMessageNode = (
 									addressingMode
 								}, 'Using LID priority for decryption')
 								
-								// Try LID decryption first, fallback to PN on session mismatch
-								try {
-									msgBuffer = await repository.decryptMessage({
-										jid: senderEncryptionJid,
-										type: e2eType,
-										ciphertext: content
-									})
-								} catch (lidError: any) {
-									// Check if this is a Bad MAC error (session mismatch)
-									const isBadMac = lidError?.message?.includes('Bad MAC') || 
-									                lidError?.message?.includes('No matching sessions')
-									
-									if (isBadMac && senderEncryptionJid !== sender) {
-										logger.warn({
-											originalSender: sender,
-											attemptedLid: senderEncryptionJid,
-											error: lidError.message
-										}, 'LID decryption failed with session mismatch, falling back to PN')
-										
-										// Fallback to original PN address
-										msgBuffer = await repository.decryptMessage({
-											jid: sender,
-											type: e2eType,
-											ciphertext: content
-										})
-									} else {
-										// Re-throw if not a session mismatch error
-										throw lidError
-									}
-								}
+								// WHATSMEOW APPROACH: Trust the determined encryption JID, no fallback
+								msgBuffer = await repository.decryptMessage({
+									jid: senderEncryptionJid,
+									type: e2eType,
+									ciphertext: content
+								})
 								break
 							case 'plaintext':
 								msgBuffer = content
