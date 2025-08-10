@@ -40,29 +40,32 @@ export class LIDMappingStore {
         
         if (!lidDecoded || !pnDecoded) return
         
-        // Extract USER portions only (no device IDs)
-        const lidUser = lidDecoded.user
-        const pnUser = pnDecoded.user
+        // CRITICAL CHANGE: Store DEVICE-SPECIFIC mappings to prevent migration of unsupported devices
+        // Extract full JID (with device info) for device-specific mapping
+        const lidWithDevice = lidDecoded.device !== undefined ? `${lidDecoded.user}:${lidDecoded.device}` : lidDecoded.user
+        const pnWithDevice = pnDecoded.device !== undefined ? `${pnDecoded.user}:${pnDecoded.device}` : pnDecoded.user
+        
+        console.log(`📱 Storing DEVICE-SPECIFIC LID mapping: ${pnWithDevice} ↔ ${lidWithDevice}`)
         
         // Redis-optimized: Direct storage, no redundant cache
         await this.keys.transaction(async () => {
-            // Store bidirectional mapping - USER ONLY  
+            // Store bidirectional mapping - DEVICE-SPECIFIC to prevent cross-device migration  
             await this.keys.set({
                 'lid-mapping': {
-                    [pnUser]: lidUser,              // "5511999999999" -> "55791994282113"
-                    [`${lidUser}_1`]: pnUser        // "55791994282113_1" -> "5511999999999" (reverse lookup)
+                    [pnWithDevice]: lidWithDevice,              // "5511999999999:43" -> "55791994282113:43"
+                    [`${lidWithDevice}_1`]: pnWithDevice        // "55791994282113:43_1" -> "5511999999999:43" (reverse lookup)
                 }
             })
         })
         
-        // Update sync cache after successful storage
-        this.updateSyncCache(pnUser, lidUser)
+        // Update sync cache after successful storage (use device-specific for immediate access)
+        this.updateSyncCache(pnWithDevice, lidWithDevice)
         
-        console.log(`✅ LID mapping stored: ${pnUser} ↔ ${lidUser}`)
+        console.log(`✅ DEVICE-SPECIFIC LID mapping stored: ${pnWithDevice} ↔ ${lidWithDevice}`)
     }
 
     /**
-     * Get LID for PN - PRESERVES DEVICE ID
+     * Get LID for PN - DEVICE-SPECIFIC LOOKUP to prevent unsupported device migration
      * Redis-optimized: Direct lookup, no cache layer
      */
     async getLIDForPN(pn: string): Promise<string | null> {
@@ -71,34 +74,49 @@ export class LIDMappingStore {
         const decoded = jidDecode(pn)
         if (!decoded) return null
         
-        // Try direct lookup by user portion first
-        const stored = await this.keys.get('lid-mapping', [decoded.user])
-        let lidUser = stored[decoded.user]
+        // CRITICAL CHANGE: Look up by DEVICE-SPECIFIC key first (exact device match)
+        const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
+        const stored = await this.keys.get('lid-mapping', [deviceKey])
+        let lidWithDevice = stored[deviceKey]
         
-        // CRITICAL FIX: If not found, try to see if this is actually a LID being passed as PN
-        if (!lidUser && decoded.user.match(/^\d{12,15}$/)) {
-            // This might be a base LID, check if we have the reverse mapping
-            const reverseStored = await this.keys.get('lid-mapping', [`${decoded.user}_1`])
-            const pnUser = reverseStored[`${decoded.user}_1`]
-            if (pnUser) {
-                // This is a LID that has a PN mapping, return it as-is since it's already a LID
-                lidUser = decoded.user
+        // If device-specific mapping not found, try base user lookup (legacy compatibility)
+        if (!lidWithDevice) {
+            const legacyStored = await this.keys.get('lid-mapping', [decoded.user])
+            const legacyLidUser = legacyStored[decoded.user]
+            if (legacyLidUser) {
+                console.log(`⚠️ Using legacy user-level LID mapping for ${pn} → ${legacyLidUser} (consider device-specific migration)`)
+                lidWithDevice = legacyLidUser
             }
         }
         
-        if (!lidUser || typeof lidUser !== 'string') return null
+        // CRITICAL FIX: If not found, try to see if this is actually a LID being passed as PN
+        if (!lidWithDevice && decoded.user.match(/^\d{12,15}$/)) {
+            // This might be a base LID, check if we have the reverse mapping
+            const reverseKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}_1` : `${decoded.user}_1`
+            const reverseStored = await this.keys.get('lid-mapping', [reverseKey])
+            const pnWithDevice = reverseStored[reverseKey]
+            if (pnWithDevice) {
+                // This is a LID that has a PN mapping, return it as-is since it's already a LID
+                lidWithDevice = deviceKey
+            }
+        }
+        
+        if (!lidWithDevice || typeof lidWithDevice !== 'string') return null
         
         // Update sync cache for immediate access
-        this.updateSyncCache(decoded.user, lidUser)
+        this.updateSyncCache(deviceKey, lidWithDevice)
         
-        // CRITICAL: Preserve device ID from input
-        return decoded.device !== undefined
-            ? `${lidUser}:${decoded.device}@lid`
+        // Parse the lidWithDevice to get user and device parts
+        const [lidUser, lidDeviceStr] = lidWithDevice.includes(':') ? lidWithDevice.split(':') : [lidWithDevice, undefined]
+        
+        // CRITICAL: Return properly formatted LID JID
+        return lidDeviceStr !== undefined
+            ? `${lidUser}:${lidDeviceStr}@lid`
             : `${lidUser}@lid`
     }
 
     /**
-     * Get PN for LID - PRESERVES DEVICE ID
+     * Get PN for LID - DEVICE-SPECIFIC LOOKUP to prevent unsupported device migration
      * Redis-optimized: Direct lookup, no cache layer
      */
     async getPNForLID(lid: string): Promise<string | null> {
@@ -107,23 +125,38 @@ export class LIDMappingStore {
         const decoded = jidDecode(lid)
         if (!decoded) return null
         
-        // Direct Redis lookup by user portion (with _1 suffix for reverse lookup)
-        const stored = await this.keys.get('lid-mapping', [`${decoded.user}_1`])
-        const pnUser = stored[`${decoded.user}_1`]
+        // CRITICAL CHANGE: Look up by DEVICE-SPECIFIC key first (with _1 suffix for reverse lookup)
+        const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
+        const reverseKey = `${deviceKey}_1`
+        const stored = await this.keys.get('lid-mapping', [reverseKey])
+        let pnWithDevice = stored[reverseKey]
         
-        if (!pnUser || typeof pnUser !== 'string') return null
+        // If device-specific mapping not found, try base user lookup (legacy compatibility)
+        if (!pnWithDevice) {
+            const legacyStored = await this.keys.get('lid-mapping', [`${decoded.user}_1`])
+            const legacyPnUser = legacyStored[`${decoded.user}_1`]
+            if (legacyPnUser) {
+                console.log(`⚠️ Using legacy user-level PN mapping for ${lid} → ${legacyPnUser} (consider device-specific migration)`)
+                pnWithDevice = legacyPnUser
+            }
+        }
+        
+        if (!pnWithDevice || typeof pnWithDevice !== 'string') return null
         
         // Update sync cache for immediate access (reverse mapping)
-        this.updateSyncCache(pnUser, decoded.user)
+        this.updateSyncCache(pnWithDevice, deviceKey)
         
-        // CRITICAL: Preserve device ID from input
-        return decoded.device !== undefined
-            ? `${pnUser}:${decoded.device}@s.whatsapp.net`
+        // Parse the pnWithDevice to get user and device parts
+        const [pnUser, pnDeviceStr] = pnWithDevice.includes(':') ? pnWithDevice.split(':') : [pnWithDevice, undefined]
+        
+        // CRITICAL: Return properly formatted PN JID
+        return pnDeviceStr !== undefined
+            ? `${pnUser}:${pnDeviceStr}@s.whatsapp.net`
             : `${pnUser}@s.whatsapp.net`
     }
 
     /**
-     * Check if a LID exists in our mappings (for validation)
+     * Check if a LID exists in our mappings (for validation) - DEVICE-SPECIFIC
      * This helps when we have a direct LID contact and need to verify it exists
      */
     async isLIDMapped(lid: string): Promise<boolean> {
@@ -132,14 +165,25 @@ export class LIDMappingStore {
         const decoded = jidDecode(lid)
         if (!decoded) return false
         
-        // Check both forward and reverse mappings
-        const [forwardStored, reverseStored] = await Promise.all([
+        // DEVICE-SPECIFIC: Check both forward and reverse mappings
+        const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
+        const reverseKey = `${deviceKey}_1`
+        
+        const [deviceStored, reverseStored, legacyForward, legacyReverse] = await Promise.all([
+            this.keys.get('lid-mapping', [deviceKey]),
+            this.keys.get('lid-mapping', [reverseKey]),
+            // Legacy compatibility checks
             this.keys.get('lid-mapping', [decoded.user]),
             this.keys.get('lid-mapping', [`${decoded.user}_1`])
         ])
         
-        // LID is mapped if either direction exists
-        return !!(forwardStored[decoded.user] || reverseStored[`${decoded.user}_1`])
+        // LID is mapped if either device-specific or legacy mapping exists
+        return !!(
+            deviceStored[deviceKey] || 
+            reverseStored[reverseKey] ||
+            legacyForward[decoded.user] || 
+            legacyReverse[`${decoded.user}_1`]
+        )
     }
 
     /**
