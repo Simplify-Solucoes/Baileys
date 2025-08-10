@@ -396,7 +396,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// If no PN session found, check if there's a migrated LID session
 				if (!hasSession && jid.includes('@s.whatsapp.net')) {
 					try {
+						logger.debug({ jid }, 'Checking for LID mapping before creating PN session')
 						const lidForPN = await lidMapping.getLIDForPN(jid)
+						logger.debug({ jid, lidForPN }, 'LID mapping lookup result')
+						
 						if (lidForPN && lidForPN.includes('@lid')) {
 							// Check if LID session exists
 							const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
@@ -404,11 +407,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							hasSession = !!lidSessions[lidSignalId]
 							
 							if (hasSession) {
-								logger.debug({ jid, lidForPN }, 'Found migrated LID session, skipping PN fetch')
+								logger.info({ jid, lidForPN }, '✅ Found migrated LID session, skipping PN fetch')
+							} else {
+								logger.warn({ jid, lidForPN, lidSignalId }, '❌ LID mapping found but no LID session exists')
 							}
+						} else {
+							logger.debug({ jid }, 'No LID mapping found, will create PN session')
 						}
 					} catch (error) {
-						logger.warn({ jid, error }, 'Failed to check LID mapping')
+						logger.error({ jid, error }, 'Failed to check LID mapping')
 					}
 				}
 				
