@@ -80,4 +80,6 @@ export type SignalRepository = {
 	getLIDMappingStore(): LIDMappingStore
 	getPrivacyTokenManager(): PrivacyTokenManager
 	migrateSession(fromJid: string, toJid: string): Promise<void>
+	validateSession(jid: string): Promise<{ exists: boolean, reason?: string }>
+	shouldRecreateSession(jid: string, retryCount: number): { shouldRecreate: boolean, reason: string }
 }

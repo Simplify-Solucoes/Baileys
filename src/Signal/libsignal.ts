@@ -1,6 +1,7 @@
 /* @ts-ignore */
 import * as libsignal from 'libsignal'
 import { LRUCache } from 'lru-cache'
+import { createHash } from 'crypto'
 import type { SignalAuthState, SignalKeyStoreWithTransaction } from '../Types'
 import type { SignalRepository } from '../Types/Signal'
 import { generateSignalPubKey } from '../Utils'
@@ -32,6 +33,23 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		updateAgeOnHas: true, // has() calls also refresh the entry
 	})
 	
+	// WHATSMEOW PATTERN: Buffered decryption cache to prevent message reprocessing
+	// This prevents advancing the ratchet multiple times for the same ciphertext
+	const decryptionCache = new LRUCache<string, Buffer>({
+		max: 500, // Cache last 500 decryptions
+		ttl: 5 * 60 * 1000, // 5 minutes TTL (messages shouldn't be reprocessed after this)
+		updateAgeOnGet: false, // Don't update TTL on access
+		updateAgeOnHas: false,
+	})
+	
+	// WHATSMEOW PATTERN: Session recreation tracking (retry.go)
+	const sessionRecreationHistory = new LRUCache<string, number>({
+		max: 1000, // Track last 1000 JIDs
+		ttl: 60 * 60 * 1000, // 1 hour TTL - whatsmeow uses 1 hour timeout
+		updateAgeOnGet: false,
+		updateAgeOnHas: false,
+	})
+	
 	// Clean, simple helper functions using proper LRU cache
 	const isRecentlyMigrated = (migrationKey: string): boolean => {
 		return migratedSessionsCache.has(migrationKey) // Automatic TTL + LRU handling
@@ -39,6 +57,45 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 	
 	const markAsMigrated = (migrationKey: string): void => {
 		migratedSessionsCache.set(migrationKey, true) // Automatic eviction + TTL handling
+	}
+	
+	// WHATSMEOW PATTERN: Session health validation
+	const validateSessionExists = async (jid: string): Promise<{ exists: boolean, reason?: string }> => {
+		try {
+			const addr = jidToSignalProtocolAddress(jid)
+			const addrStr = addr.toString()
+			const session = await storage.loadSession(addrStr)
+			
+			if (!session) {
+				return { exists: false, reason: "no session record" }
+			}
+			
+			if (!session.haveOpenSession()) {
+				return { exists: false, reason: "session record exists but no open session" }
+			}
+			
+			return { exists: true }
+		} catch (error) {
+			return { exists: false, reason: `validation error: ${error}` }
+		}
+	}
+	
+	// WHATSMEOW PATTERN: Should recreate session logic (retry.go:126-137)
+	const shouldRecreateSession = (jid: string, retryCount: number): { shouldRecreate: boolean, reason: string } => {
+		const lastRecreationTime = sessionRecreationHistory.get(jid)
+		
+		// Need at least 2 retries before recreation (whatsmeow pattern)
+		if (retryCount < 2) {
+			return { shouldRecreate: false, reason: 'retry count below threshold' }
+		}
+		
+		// Check if enough time passed since last recreation (1 hour)
+		if (!lastRecreationTime || Date.now() - lastRecreationTime > 60 * 60 * 1000) {
+			sessionRecreationHistory.set(jid, Date.now())
+			return { shouldRecreate: true, reason: 'retry count > 1 and timeout expired' }
+		}
+		
+		return { shouldRecreate: false, reason: 'recreation attempted recently' }
 	}
 	
 	/**
@@ -206,22 +263,54 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			})
 		},
 		async decryptMessage({ jid, type, ciphertext }) {
+			// WHATSMEOW PATTERN: Buffered decryption to prevent reprocessing same message
+			// Generate cache key from jid + ciphertext hash to prevent double ratchet advancement
+			const ciphertextHash = createHash('sha256').update(ciphertext).digest('hex').substring(0, 16)
+			const cacheKey = `${jid}:${ciphertextHash}`
+			
+			// Check if this exact ciphertext was already decrypted
+			const cachedResult = decryptionCache.get(cacheKey)
+			if (cachedResult) {
+				console.log(`🔄 Using cached decryption for ${jid} (${ciphertextHash})`)
+				return cachedResult
+			}
+			
+			// WHATSMEOW PATTERN: Validate session exists before decryption
+			const sessionValidation = await validateSessionExists(jid)
+			if (!sessionValidation.exists && type === 'msg') {
+				// For regular messages (not prekey), we need an existing session
+				throw new Error(`Cannot decrypt message: ${sessionValidation.reason}`)
+			}
+			
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				const addr = jidToSignalProtocolAddress(jid)
 				const session = new libsignal.SessionCipher(storage, addr)
 				
 				let result: Buffer
-				switch (type) {
-					case 'pkmsg':
-						result = await session.decryptPreKeyWhisperMessage(ciphertext)
-						break
-					case 'msg':
-						result = await session.decryptWhisperMessage(ciphertext)
-						break
-					default:
-						throw new Error(`Unknown message type: ${type}`)
+				try {
+					switch (type) {
+						case 'pkmsg':
+							console.log(`🔐 Decrypting PreKey message from ${jid}`)
+							result = await session.decryptPreKeyWhisperMessage(ciphertext)
+							break
+						case 'msg':
+							console.log(`🔐 Decrypting regular message from ${jid}`)
+							result = await session.decryptWhisperMessage(ciphertext)
+							break
+						default:
+							throw new Error(`Unknown message type: ${type}`)
+					}
+				} catch (decryptError) {
+					console.error(`❌ Decryption failed for ${jid}: ${decryptError}`)
+					// Clear any corrupt session state to force recreation
+					decryptionCache.delete(cacheKey)
+					throw decryptError
 				}
+				
+				// Cache the decryption result to prevent reprocessing
+				decryptionCache.set(cacheKey, result)
+				console.log(`✅ Decryption cached for ${jid} (${ciphertextHash})`)
 				
 				return result
 			})
@@ -410,6 +499,18 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			return privacyTokenManager
 		},
 		/**
+		 * WHATSMEOW PATTERN: Session health validation
+		 */
+		async validateSession(jid: string) {
+			return validateSessionExists(jid)
+		},
+		/**
+		 * WHATSMEOW PATTERN: Session recreation decision logic
+		 */
+		shouldRecreateSession(jid: string, retryCount: number) {
+			return shouldRecreateSession(jid, retryCount)
+		},
+		/**
 		 * WHATSMEOW EXACT: MigratePNToLID - ONE-WAY migration from PN to LID only
 		 * This is NOT bidirectional! Only PN→LID, never LID→PN
 		 */
@@ -453,9 +554,19 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						
 						// Store independent session copy to LID address
 						await storage.storeSession(toAddrStr, independentSession)
-						// Delete original PN session to prevent state sharing
+						
+						// WHATSMEOW CRITICAL: Delete original PN session to prevent state sharing
 						await auth.keys.set({ session: { [fromAddrStr]: null } })
-						console.log(`✅ Moved PN session to LID: ${fromAddrStr} → ${toAddrStr}`)
+						
+						// Verify the deletion was successful
+						const verifyDeletion = await auth.keys.get('session', [fromAddrStr])
+						if (verifyDeletion[fromAddrStr]) {
+							console.warn(`⚠️ PN session deletion verification failed: ${fromAddrStr}`)
+						} else {
+							console.log(`✅ PN session deleted successfully: ${fromAddrStr}`)
+						}
+						
+						console.log(`✅ Session migrated: ${fromAddrStr} → ${toAddrStr}`)
 						markAsMigrated(migrationKey)
 					} else {
 						console.log(`ℹ️ No PN session to migrate: ${fromJid}`)

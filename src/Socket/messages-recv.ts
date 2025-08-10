@@ -725,8 +725,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const sendMessagesAgain = async (key: proto.IMessageKey, ids: string[], retryNode: BinaryNode) => {
-		// todo: implement a cache to store the last 256 sent messages (copy whatsmeow)
-		const msgs = await Promise.all(ids.map(id => getMessage({ ...key, id })))
+		// todo: implement a cache to store the last 256 sent messages (copy whatsmeow)  
+		// CRITICAL: The key.id is empty, but we need to lookup each message by its actual ID
+		// Use key.remoteJid (which is correct) but with each specific message ID
+		const msgs = await Promise.all(ids.map(id => getMessage({ 
+			remoteJid: key.remoteJid,
+			id: id, 
+			fromMe: key.fromMe
+			// NOTE: Don't include participant in cache lookup - messages are cached by remoteJid + id only
+		})))
 		const remoteJid = key.remoteJid!
 		let participant = key.participant || remoteJid
 		
