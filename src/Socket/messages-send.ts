@@ -528,20 +528,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						const lidForPN = await lidStore.getLIDForPN(wireJid)
 						
 						if (lidForPN && lidForPN.includes('@lid')) {
-							// Check if we need to migrate (same logic as receive)
+							// CRITICAL FIX: Only use LID for encryption if we already have a LID session
+							// DO NOT migrate sessions during message sending - only during receiving
 							const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
 							const lidSessions = await authState.keys.get('session', [lidSignalId])
 							const hasLIDSession = !!lidSessions[lidSignalId]
 							
-							if (!hasLIDSession) {
-								// WHATSMEOW PATTERN: Only migrate when switching to LID for first time
-								await signalRepository.migrateSession(wireJid, lidForPN)
-								console.log(`🔄 Wire-Encryption separation (migrated): ${wireJid} → ${lidForPN}`)
+							if (hasLIDSession) {
+								// We have LID session - use it for encryption
+								encryptionJid = lidForPN
+								console.log(`🔄 Using existing LID session for encryption: ${wireJid} → ${lidForPN}`)
 							} else {
-								console.log(`🔄 Wire-Encryption separation (existing): ${wireJid} → ${lidForPN}`)
+								// NO LID session - stick with PN for encryption
+								// Migration should only happen during message decryption, not sending
+								console.log(`🔄 No LID session found - using PN for encryption: ${wireJid}`)
 							}
-							
-							encryptionJid = lidForPN
 						}
 					} catch (error) {
 						console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)
