@@ -347,26 +347,21 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						console.log(`🔄 LID priority routing: ${jid} → ${lidJid}`)
 						encryptionJid = lidJid
 						
-						// CRITICAL FIX: Only migrate if LID session doesn't exist yet
-						// This prevents destroying existing sessions on every encryption
+						// WHATSMEOW ALIGNMENT: Don't migrate during encryption - this causes race conditions
+						// Session migration should happen during message decryption when LID is discovered
 						if (shouldMigrate) {
+							console.log(`🔄 LID available for ${jid} → ${lidJid}, but migration deferred to avoid encryption-time race conditions`)
+							console.log(`📨 Migration will happen during incoming message processing (like whatsmeow)`)
+							
+							// Just check if LID session already exists
 							const lidAddr = jidToSignalProtocolAddress(lidJid)
 							const existingLidSession = await storage.loadSession(lidAddr.toString())
 							
-							if (!existingLidSession || !existingLidSession.haveOpenSession()) {
-								console.log(`🔄 Session migration required: ${jid} → ${lidJid} (LID session missing)`)
-								try {
-									await repository.migrateSession(jid, lidJid)
-									console.log(`✅ Session migrated successfully: ${jid} → ${lidJid}`)
-								} catch (migrationError: any) {
-									console.error(`❌ Session migration failed: ${jid} → ${lidJid}:`, migrationError?.message || migrationError)
-									// WHATSMEOW ALIGNMENT: Don't fall back to PN during encryption
-									// This breaks multi-device session consistency
-									console.log(`🔑 LID session required but migration failed - session establishment needed: ${lidJid}`)
-									// Keep using LID address - the "No session" error will trigger proper session establishment
-								}
+							if (existingLidSession && existingLidSession.haveOpenSession()) {
+								console.log(`✅ LID session already exists: ${lidJid}`)
 							} else {
-								console.log(`⚡ LID session already exists, skipping migration: ${jid} → ${lidJid}`)
+								console.log(`⚠️ LID session not found: ${lidJid}`)
+								console.log(`🔄 Migration will be triggered by incoming message decryption`)
 							}
 						}
 					}
@@ -626,13 +621,19 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					if (fromSession && fromSession.haveOpenSession()) {
 						console.log(`🔄 Migrating session data: ${fromJid} → ${toJid}`)
 						
-						// WHATSMEOW APPROACH: Copy session data to LID address
+						// WHATSMEOW APPROACH: Deep copy session data to prevent ratchet state sharing
+						// CRITICAL: Create independent session objects to avoid cross-device contamination
 						try {
-							// Create new session at LID address with same session data
-							// Use the storage interface directly like storeSession does
-							await storage.storeSession(toAddrStr, fromSession)
+							// Serialize the session to create a deep copy
+							// This prevents shared references that cause ratchet corruption
+							const sessionBytes = fromSession.serialize()
+							const copiedSession = libsignal.SessionRecord.deserialize(sessionBytes)
 							
-							console.log(`✅ Session data migrated successfully: ${fromJid} → ${toJid}`)
+							// Store the COPY at LID address - not a reference!
+							await storage.storeSession(toAddrStr, copiedSession)
+							
+							console.log(`✅ Session data deep-copied and migrated: ${fromJid} → ${toJid}`)
+							console.log(`📊 Session serialized successfully`)
 							
 							// Store the mapping after successful session migration
 							await lidMapping.storeLIDPNMapping(toJid, fromJid)

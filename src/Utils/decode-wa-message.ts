@@ -263,6 +263,27 @@ export const decryptMessageNode = (
 									addressingMode
 								}, 'Using LID priority for decryption')
 								
+								// WHATSMEOW ALIGNMENT: Migrate session when LID is discovered during decryption
+								// This prevents encryption-time race conditions
+								if (senderEncryptionJid !== sender && senderEncryptionJid.includes('@lid')) {
+									try {
+										logger.debug({
+											pnJid: sender,
+											lidJid: senderEncryptionJid,
+											action: 'session-migration-check'
+										}, 'Checking for session migration during decryption')
+										
+										await repository.migrateSession(sender, senderEncryptionJid)
+										logger.debug('Session migration completed during decryption')
+									} catch (migrationError: any) {
+										logger.warn({
+											error: migrationError?.message || migrationError,
+											pnJid: sender,
+											lidJid: senderEncryptionJid
+										}, 'Session migration failed during decryption - continuing with available session')
+									}
+								}
+								
 								// WHATSMEOW APPROACH: Trust the determined encryption JID, no fallback
 								msgBuffer = await repository.decryptMessage({
 									jid: senderEncryptionJid,
