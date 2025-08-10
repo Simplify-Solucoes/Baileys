@@ -62,8 +62,10 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				return
 			}
 			
-			// 2. ATOMIC MIGRATION: Copy complete session state
-			await storage.storeSession(toAddr.toString(), fromSession)
+			// 2. WHATSMEOW EXACT: MOVE session state (independent copy + delete original)
+			const serializedSession = fromSession.serialize()
+			const independentSession = libsignal.SessionRecord.deserialize(serializedSession)
+			await storage.storeSession(toAddr.toString(), independentSession)
 			
 			// 3. Migrate privacy tokens
 			try {
@@ -76,8 +78,8 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			// 4. Update LID mapping
 			await lidMapping.storeLIDPNMapping(toJid, fromJid)
 			
-			// 5. Invalidate old session (optional - WhatsApp keeps both temporarily)
-			// await storage.storeSession(fromAddr.toString(), null)
+			// 5. CRITICAL: Delete original PN session to prevent state sharing
+			await auth.keys.set({ session: { [fromAddr.toString()]: null } })
 			
 			console.log(`✅ Coordinated migration completed: ${fromJid} → ${toJid}`)
 		} catch (error) {
