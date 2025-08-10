@@ -109,18 +109,26 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 	/**
 	 * Server-coordinated session migration - migrate only when server notifies
 	 * Based on actual WhatsApp/whatsmeow approach (NOT reactive)
+	 * CRITICAL: Device-specific migration to prevent cross-device conflicts
 	 */
 	const coordinatedSessionMigration = async (fromJid: string, toJid: string): Promise<void> => {
 		// WHATSAPP'S PROPER MIGRATION: Only called when server sends migration notification
 		// This prevents reactive migration during message processing that causes Bad MAC
 		
-		console.log(`🔄 Server-coordinated migration: ${fromJid} → ${toJid}`)
+		console.log(`🔄 Server-coordinated device-specific migration: ${fromJid} → ${toJid}`)
 		
 		const fromAddr = jidToSignalProtocolAddress(fromJid)
 		const toAddr = jidToSignalProtocolAddress(toJid)
+		const deviceSpecificMigrationKey = `${fromAddr.toString()}→${toAddr.toString()}`
+		
+		// Check if this specific device was already migrated
+		if (isRecentlyMigrated(deviceSpecificMigrationKey)) {
+			console.log(`✅ Device-specific coordinated migration already completed: ${fromJid} → ${toJid}`)
+			return
+		}
 		
 		try {
-			// 1. Load existing session from old address
+			// 1. Load existing session from old address for this specific device
 			const fromSession = await storage.loadSession(fromAddr.toString())
 			if (!fromSession || !fromSession.haveOpenSession()) {
 				console.log(`⚠️ No active session found at ${fromJid} - skipping migration`)
@@ -132,23 +140,26 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			const independentSession = libsignal.SessionRecord.deserialize(serializedSession)
 			await storage.storeSession(toAddr.toString(), independentSession)
 			
-			// 3. Migrate privacy tokens
+			// 3. Migrate privacy tokens for this specific device
 			try {
 				await privacyTokenManager.migratePrivacyToken(fromJid, toJid)
-				console.log(`🔐 Privacy token migrated: ${fromJid} → ${toJid}`)
+				console.log(`🔐 Privacy token migrated for device: ${fromJid} → ${toJid}`)
 			} catch (tokenError) {
-				console.warn(`⚠️ Privacy token migration failed: ${fromJid} → ${toJid}`, tokenError)
+				console.warn(`⚠️ Privacy token migration failed for device: ${fromJid} → ${toJid}`, tokenError)
 			}
 			
-			// 4. Update LID mapping
+			// 4. Update LID mapping for this specific device
 			await lidMapping.storeLIDPNMapping(toJid, fromJid)
 			
 			// 5. CRITICAL: Delete original PN session to prevent state sharing
 			await auth.keys.set({ session: { [fromAddr.toString()]: null } })
 			
-			console.log(`✅ Coordinated migration completed: ${fromJid} → ${toJid}`)
+			// 6. Mark this device-specific migration as completed
+			markAsMigrated(deviceSpecificMigrationKey)
+			
+			console.log(`✅ Coordinated device-specific migration completed: ${fromJid} → ${toJid}`)
 		} catch (error) {
-			console.error(`❌ Failed coordinated migration: ${fromJid} → ${toJid}`, error)
+			console.error(`❌ Failed coordinated device-specific migration: ${fromJid} → ${toJid}`, error)
 			throw error
 		}
 	}
@@ -603,8 +614,8 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			})
 		},
 		/**
-		 * WHATSMEOW EXACT: MigratePNToLID - ONE-WAY migration from PN to LID only
-		 * This is NOT bidirectional! Only PN→LID, never LID→PN
+		 * WHATSMEOW EXACT: MigratePNToLID - Device-specific ONE-WAY migration from PN to LID
+		 * CRITICAL: Each device session must be migrated independently to prevent cross-device conflicts
 		 */
 		async migrateSession(fromJid: string, toJid: string) {
 			// WHATSMEOW RULE: Only migrate PN → LID, never the reverse
@@ -616,25 +627,33 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				return
 			}
 			
-			const migrationKey = `${fromJid}→${toJid}`
+			// WHATSMEOW PATTERN: Device-specific migration cache key (includes device ID)
+			// This ensures each device's session is migrated independently
+			const fromAddr = jidToSignalProtocolAddress(fromJid)
+			const toAddr = jidToSignalProtocolAddress(toJid)
+			const deviceSpecificMigrationKey = `${fromAddr.toString()}→${toAddr.toString()}`
 			
-			// Check if migration was recently completed (LRU + TTL)
-			if (isRecentlyMigrated(migrationKey)) {
-				console.log(`✅ Migration already completed recently: ${migrationKey}`)
+			// Check if THIS SPECIFIC DEVICE was already migrated (not just the user)
+			if (isRecentlyMigrated(deviceSpecificMigrationKey)) {
+				console.log(`✅ Device-specific migration already completed: ${fromJid} → ${toJid}`)
 				return
 			}
 			
-			console.log(`🔄 whatsmeow MigratePNToLID: ${fromJid} → ${toJid}`)
+			console.log(`🔄 whatsmeow device-specific MigratePNToLID: ${fromJid} → ${toJid}`)
 			
 			// ATOMIC MIGRATION: All operations in single transaction (whatsmeow pattern)
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				try {
-					const fromAddr = jidToSignalProtocolAddress(fromJid)
-					const toAddr = jidToSignalProtocolAddress(toJid)
 					const fromAddrStr = fromAddr.toString()
 					const toAddrStr = toAddr.toString()
 					
-					// REDIS: Skip session existence check - Redis SET operations are atomic and overwrite existing keys
+					// Check if destination already has a session for this device
+					const toSession = await storage.loadSession(toAddrStr)
+					if (toSession && toSession.haveOpenSession()) {
+						console.log(`✅ LID session already exists for device ${toJid}, skipping migration`)
+						markAsMigrated(deviceSpecificMigrationKey)
+						return
+					}
 					
 					// WHATSMEOW EXACT: MOVE session from PN to LID (copy + delete original)
 					const fromSession = await storage.loadSession(fromAddrStr)
@@ -644,11 +663,14 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						const serializedSession = fromSession.serialize()
 						const independentSession = libsignal.SessionRecord.deserialize(serializedSession)
 						
-						// Store independent session copy to LID address
+						// Store independent session copy to LID address for this specific device
 						await storage.storeSession(toAddrStr, independentSession)
 						
 						// WHATSMEOW CRITICAL: Delete original PN session to prevent state sharing
 						await auth.keys.set({ session: { [fromAddrStr]: null } })
+						
+						// Store LID mapping for this specific device
+						await lidMapping.storeLIDPNMapping(toJid, fromJid)
 						
 						// Verify the deletion was successful
 						const verifyDeletion = await auth.keys.get('session', [fromAddrStr])
@@ -658,14 +680,14 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 							console.log(`✅ PN session deleted successfully: ${fromAddrStr}`)
 						}
 						
-						console.log(`✅ Session migrated: ${fromAddrStr} → ${toAddrStr}`)
-						markAsMigrated(migrationKey)
+						console.log(`✅ Device-specific session migrated: ${fromAddrStr} → ${toAddrStr}`)
+						markAsMigrated(deviceSpecificMigrationKey)
 					} else {
-						console.log(`ℹ️ No PN session to migrate: ${fromJid}`)
+						console.log(`ℹ️ No PN session to migrate for device: ${fromJid}`)
 					}
 					
 				} catch (error) {
-					console.error(`❌ PN→LID migration failed: ${fromJid} → ${toJid}`, error)
+					console.error(`❌ Device-specific PN→LID migration failed: ${fromJid} → ${toJid}`, error)
 					throw error
 				}
 			})
@@ -732,20 +754,23 @@ function signalStorage({ creds, keys }: SignalAuthState, lidMapping: LIDMappingS
 			try {
 				console.log(`🔍 Loading session: ${id}`)
 				
-				// WHATSMEOW GUARD: Redirect PN session requests to LID sessions when available
+				// WHATSMEOW PATTERN: Device-specific LID session lookup
 				let actualId = id
 				if (id.includes('@s.whatsapp.net')) {
 					try {
 						const jid = signalProtocolAddressToJid(id)
+						// CRITICAL: Use the EXACT device JID for LID lookup, not just the user part
 						const lidForPN = await lidMapping.getLIDForPN(jid)
 						
 						if (lidForPN && lidForPN.includes('@lid')) {
 							const lidId = jidToSignalProtocolAddress(lidForPN).toString()
-							// Check if LID session exists
+							// Check if LID session exists for this specific device
 							const { [lidId]: lidSess } = await keys.get('session', [lidId])
 							if (lidSess) {
-								console.log(`🔄 Session redirect: ${id} → ${lidId}`)
+								console.log(`🔄 Device-specific session redirect: ${id} → ${lidId}`)
 								actualId = lidId
+							} else {
+								console.log(`⚠️ LID mapping exists for ${jid} → ${lidForPN} but no session found at ${lidId}`)
 							}
 						}
 					} catch (error) {
