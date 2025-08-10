@@ -817,11 +817,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							devices.push({ user: meUser })
 						}
 
-						if (additionalAttributes?.['category'] !== 'peer') {
-							// WHATSMEOW PATTERN: Use ownId (which might be LID) for device resolution
-							const additionalDevices = await getUSyncDevices([ownId, jid], !!useUserDevicesCache, true)
-							devices.push(...additionalDevices)
-						}
+						// CRITICAL FIX: Always get device list regardless of message category
+						// Skipping device discovery causes replies to only reach the sender device
+						// WHATSMEOW PATTERN: Use ownId (which might be LID) for device resolution
+						const additionalDevices = await getUSyncDevices([ownId, jid], !!useUserDevicesCache, true)
+						devices.push(...additionalDevices)
 					}
 				}
 
