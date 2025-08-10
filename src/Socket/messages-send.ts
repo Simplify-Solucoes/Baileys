@@ -347,12 +347,34 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			jidsRequiringFetch = jids
 				} else {
 					logger.debug({ participant, retryCount, reason: shouldRecreate.reason }, 'Using existing sessions')
-					// Still check which sessions are missing
+					// Still check which sessions are missing (with LID migration check)
+					const lidMapping = signalRepository.getLIDMappingStore()
 					const addrs = jids.map(jid => signalRepository.jidToSignalProtocolAddress(jid))
 					const sessions = await authState.keys.get('session', addrs)
+					
 					for (const jid of jids) {
 						const signalId = signalRepository.jidToSignalProtocolAddress(jid)
-						if (!sessions[signalId]) {
+						let hasSession = !!sessions[signalId]
+						
+						// Check for migrated LID session if PN session missing
+						if (!hasSession && jid.includes('@s.whatsapp.net')) {
+							try {
+								const lidForPN = await lidMapping.getLIDForPN(jid)
+								if (lidForPN && lidForPN.includes('@lid')) {
+									const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
+									const lidSessions = await authState.keys.get('session', [lidSignalId])
+									hasSession = !!lidSessions[lidSignalId]
+									
+									if (hasSession) {
+										logger.debug({ jid, lidForPN }, 'Found migrated LID session during retry, skipping PN fetch')
+									}
+								}
+							} catch (error) {
+								logger.warn({ jid, error }, 'Failed to check LID mapping during retry')
+							}
+						}
+						
+						if (!hasSession) {
 							jidsRequiringFetch.push(jid)
 						}
 					}
@@ -362,11 +384,35 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				jidsRequiringFetch = jids
 			}
 		} else {
+			// CRITICAL FIX: Check for migrated LID sessions before fetching new PN sessions
+			const lidMapping = signalRepository.getLIDMappingStore()
 			const addrs = jids.map(jid => signalRepository.jidToSignalProtocolAddress(jid))
 			const sessions = await authState.keys.get('session', addrs)
+			
 			for (const jid of jids) {
 				const signalId = signalRepository.jidToSignalProtocolAddress(jid)
-				if (!sessions[signalId]) {
+				let hasSession = !!sessions[signalId]
+				
+				// If no PN session found, check if there's a migrated LID session
+				if (!hasSession && jid.includes('@s.whatsapp.net')) {
+					try {
+						const lidForPN = await lidMapping.getLIDForPN(jid)
+						if (lidForPN && lidForPN.includes('@lid')) {
+							// Check if LID session exists
+							const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
+							const lidSessions = await authState.keys.get('session', [lidSignalId])
+							hasSession = !!lidSessions[lidSignalId]
+							
+							if (hasSession) {
+								logger.debug({ jid, lidForPN }, 'Found migrated LID session, skipping PN fetch')
+							}
+						}
+					} catch (error) {
+						logger.warn({ jid, error }, 'Failed to check LID mapping')
+					}
+				}
+				
+				if (!hasSession) {
 					jidsRequiringFetch.push(jid)
 				}
 			}
