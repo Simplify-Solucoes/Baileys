@@ -244,14 +244,17 @@ export const decryptMessageNode = (
 									}
 								}
 								
-								// WHATSMEOW PATTERN: Always migrate when shouldMigrate is true
+								// CRITICAL FIX: NO session migration during INCOMING message decryption
+								// Session migration should only happen during OUTGOING encryption, not incoming decryption
+								// When a device replies, we decrypt using their chosen identity without affecting other devices
 								if (shouldMigrate) {
-									try {
-										await repository.migrateSession(sender, senderEncryptionJid)
-										logger.debug({ sender, lid: senderEncryptionJid }, 'Session migration triggered')
-									} catch (error) {
-										logger.error({ sender, lid: senderEncryptionJid, error }, 'Session migration failed')
-									}
+									// Just log the intended migration - don't execute it during decryption
+									logger.debug({ 
+										sender, 
+										lid: senderEncryptionJid,
+										action: 'decrypt-only',
+										note: 'Session migration skipped for incoming message to prevent multi-device corruption'
+									}, 'Incoming decryption detected LID switch but migration skipped')
 								}
 								
 								logger.debug({ 
