@@ -838,11 +838,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				for (const { user, device } of devices) {
 					// Check if this is our device (could match either PN or LID user)
 					const isMe = user === meUser || user === mePnUser || (meLidUser && user === meLidUser)
+					
+					// CRITICAL FIX: Determine if this device user is a LID user (contains underscores)
+					const deviceIsLid = user.includes('_')
+					
+					// Use appropriate server based on the device's actual format, not destination
 					const jid = jidEncode(
 						isMe && isLid ? authState.creds?.me?.lid!.split(':')[0] || user : user,
-						isLid ? 'lid' : 's.whatsapp.net',
+						deviceIsLid ? 'lid' : 's.whatsapp.net',
 						device
 					)
+					
 					if (isMe) {
 						meJids.push(jid)
 					} else {
