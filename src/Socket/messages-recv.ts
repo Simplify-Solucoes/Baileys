@@ -766,8 +766,33 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 		
+		// WHATSMEOW PATTERN: Check for LID session before forcing PN session creation
+		const lidStore = signalRepository.getLIDMappingStore()
+		let shouldForceSession = true
+		
+		if (participant.includes('@s.whatsapp.net') && !alternativeAddressingUsed) {
+			// Check if we have migrated LID session - if so, don't recreate PN session
+			try {
+				const lidForPN = await lidStore.getLIDForPN(participant)
+				if (lidForPN && lidForPN.includes('@lid')) {
+					const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
+					const lidSessions = await authState.keys.get('session', [lidSignalId])
+					const hasLIDSession = !!lidSessions[lidSignalId]
+					
+					if (hasLIDSession) {
+						logger.debug({ participant, lidForPN }, 'Skipping PN session recreation - using migrated LID session')
+						shouldForceSession = false
+						// Switch to LID for message sending
+						participant = lidForPN
+					}
+				}
+			} catch (error) {
+				logger.warn({ participant, error }, 'Failed to check LID session during retry')
+			}
+		}
+		
 		// Use enhanced assertSessions with whatsmeow retry context
-		await assertSessions([participant], true, { retryCount, participant })
+		await assertSessions([participant], shouldForceSession, { retryCount, participant })
 		
 		// if it's the primary jid sending the request, send to all devices
 		const sendToAll = !jidDecode(participant)?.device
