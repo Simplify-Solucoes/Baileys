@@ -347,25 +347,25 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						console.log(`🔄 LID priority routing: ${jid} → ${lidJid}`)
 						encryptionJid = lidJid
 						
+						// CRITICAL FIX: Only migrate if LID session doesn't exist yet
+						// This prevents destroying existing sessions on every encryption
 						if (shouldMigrate) {
-							console.log(`🔄 Session migration required: ${jid} → ${lidJid}`)
-							try {
-								await repository.migrateSession(jid, lidJid)
-								console.log(`✅ Session migrated successfully: ${jid} → ${lidJid}`)
-								
-								// Verify the migrated session actually exists
-								const lidAddr = jidToSignalProtocolAddress(lidJid)
-								const migratedSession = await storage.loadSession(lidAddr.toString())
-								
-								if (!migratedSession) {
-									console.warn(`⚠️ Migrated session not found, falling back to PN: ${jid}`)
+							const lidAddr = jidToSignalProtocolAddress(lidJid)
+							const existingLidSession = await storage.loadSession(lidAddr.toString())
+							
+							if (!existingLidSession || !existingLidSession.haveOpenSession()) {
+								console.log(`🔄 Session migration required: ${jid} → ${lidJid} (LID session missing)`)
+								try {
+									await repository.migrateSession(jid, lidJid)
+									console.log(`✅ Session migrated successfully: ${jid} → ${lidJid}`)
+								} catch (migrationError: any) {
+									console.error(`❌ Session migration failed: ${jid} → ${lidJid}:`, migrationError?.message || migrationError)
+									// Fallback to original JID if migration fails
+									console.log(`🔄 Falling back to original JID: ${jid}`)
 									encryptionJid = jid
 								}
-							} catch (migrationError: any) {
-								console.error(`❌ Session migration failed: ${jid} → ${lidJid}:`, migrationError?.message || migrationError)
-								// Fallback to original JID if migration fails
-								console.log(`🔄 Falling back to original JID: ${jid}`)
-								encryptionJid = jid
+							} else {
+								console.log(`⚡ LID session already exists, skipping migration: ${jid} → ${lidJid}`)
 							}
 						}
 					}
