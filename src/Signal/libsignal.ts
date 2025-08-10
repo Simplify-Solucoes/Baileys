@@ -598,6 +598,16 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				return
 			}
 			
+			// COMPANION DEVICE FIX: Extract device information for special handling
+			// Extract device ID from JID format: user:device@server or user.agent:device@server
+			const deviceIdStr = fromJid.includes(':') ? fromJid.split(':')[1]?.split('@')[0] : '0'
+			const fromDeviceId = parseInt(deviceIdStr || '0', 10)
+			const isCompanionDevice = fromDeviceId > 0  // Device 0 is primary, >0 are companions
+			
+			if (isCompanionDevice) {
+				console.log(`🔄 COMPANION DEVICE migration detected: ${fromJid} (device ${fromDeviceId}) → ${toJid}`)
+			}
+			
 			console.log(`🔄 whatsmeow device-specific MigratePNToLID: ${fromJid} → ${toJid}`)
 			
 			// ATOMIC MIGRATION: All operations in single transaction (whatsmeow pattern)
@@ -611,6 +621,11 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					if (toSession && toSession.haveOpenSession()) {
 						console.log(`✅ LID session already exists for device ${toJid}, skipping migration`)
 						markAsMigrated(deviceSpecificMigrationKey)
+						
+						// COMPANION DEVICE FIX: If this is a companion device, ensure session state consistency
+						if (isCompanionDevice) {
+							await repository.ensureCompanionDeviceSessionConsistency(fromJid, toJid)
+						}
 						return
 					}
 					
@@ -629,6 +644,12 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 							const sessionBytes = fromSession.serialize()
 							const copiedSession = libsignal.SessionRecord.deserialize(sessionBytes)
 							
+							// COMPANION DEVICE FIX: For companion devices, ensure session is properly isolated
+							if (isCompanionDevice) {
+								console.log(`🔄 COMPANION DEVICE: Creating isolated session for device ${fromDeviceId}`)
+								// The session copy is already isolated, but we log this for debugging
+							}
+							
 							// Store the COPY at LID address - not a reference!
 							await storage.storeSession(toAddrStr, copiedSession)
 							
@@ -638,6 +659,11 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 							// Store the mapping after successful session migration
 							await lidMapping.storeLIDPNMapping(toJid, fromJid)
 							console.log(`🔗 LID mapping stored after session migration: ${fromJid} ↔ ${toJid}`)
+							
+							// COMPANION DEVICE FIX: Ensure consistency across all devices
+							if (isCompanionDevice) {
+								await repository.ensureCompanionDeviceSessionConsistency(fromJid, toJid)
+							}
 							
 							markAsMigrated(deviceSpecificMigrationKey)
 							return
@@ -661,6 +687,39 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					throw error
 				}
 			})
+		},
+		
+		/**
+		 * COMPANION DEVICE FIX: Ensures session state consistency between primary and companion devices
+		 * This prevents the issue where iPhone companion sends message and Android primary can't decrypt replies
+		 */
+		async ensureCompanionDeviceSessionConsistency(fromJid: string, toJid: string) {
+			console.log(`🔄 COMPANION DEVICE: Ensuring session consistency for ${fromJid} → ${toJid}`)
+			
+			try {
+				// Extract base JID (without device ID) to find all related devices
+				const baseFromJid = fromJid.split(':')[0] || fromJid  // Remove device ID, fallback to original
+				const baseToJidParts = toJid.split('_')
+				const baseToJid = baseToJidParts.length > 0 ? baseToJidParts[0] + '@lid' : toJid  // Remove agent ID, keep base LID
+				
+				// The key insight: When a companion device triggers migration, we need to ensure
+				// that ALL devices (including device 0 - the primary) understand the LID mapping
+				// This prevents the primary device from being "stuck" with the old PN session
+				
+				// Store the LID mapping for the base user (without device specificity)
+				// This ensures all devices can resolve PN → LID correctly
+				await lidMapping.storeLIDPNMapping(baseToJid, baseFromJid)
+				console.log(`🔗 COMPANION DEVICE: Base LID mapping ensured: ${baseFromJid} ↔ ${baseToJid}`)
+				
+				// The actual session data remains device-specific (which is correct for Signal protocol)
+				// but the LID resolution becomes available to all devices
+				
+				console.log(`✅ COMPANION DEVICE: Session consistency ensured`)
+				
+			} catch (error) {
+				console.error(`❌ COMPANION DEVICE: Failed to ensure session consistency:`, error)
+				// Don't throw - this is a best-effort consistency improvement
+			}
 		},
 		
 		/**
