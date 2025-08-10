@@ -105,135 +105,6 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		
 		return { shouldRecreate: false, reason: 'recreation attempted recently' }
 	}
-	
-	/**
-	 * Server-coordinated session migration - migrate only when server notifies
-	 * Based on actual WhatsApp/whatsmeow approach (NOT reactive)
-	 * CRITICAL: Device-specific migration to prevent cross-device conflicts
-	 */
-	const coordinatedSessionMigration = async (fromJid: string, toJid: string): Promise<void> => {
-		// WHATSAPP'S PROPER MIGRATION: Only called when server sends migration notification
-		// This prevents reactive migration during message processing that causes Bad MAC
-		
-		console.log(`🔄 Server-coordinated device-specific migration: ${fromJid} → ${toJid}`)
-		
-		const fromAddr = jidToSignalProtocolAddress(fromJid)
-		const toAddr = jidToSignalProtocolAddress(toJid)
-		const deviceSpecificMigrationKey = `${fromAddr.toString()}→${toAddr.toString()}`
-		
-		// Check if this specific device was already migrated
-		if (isRecentlyMigrated(deviceSpecificMigrationKey)) {
-			console.log(`✅ Device-specific coordinated migration already completed: ${fromJid} → ${toJid}`)
-			return
-		}
-		
-		try {
-			// 1. Load existing session from old address for this specific device
-			const fromSession = await storage.loadSession(fromAddr.toString())
-			if (!fromSession || !fromSession.haveOpenSession()) {
-				console.log(`⚠️ No active session found at ${fromJid} - skipping migration`)
-				return
-			}
-			
-			// 2. WHATSMEOW EXACT: MOVE session state (independent copy + delete original)
-			const serializedSession = fromSession.serialize()
-			const independentSession = libsignal.SessionRecord.deserialize(serializedSession)
-			await storage.storeSession(toAddr.toString(), independentSession)
-			
-			// 3. Migrate privacy tokens for this specific device
-			try {
-				await privacyTokenManager.migratePrivacyToken(fromJid, toJid)
-				console.log(`🔐 Privacy token migrated for device: ${fromJid} → ${toJid}`)
-			} catch (tokenError) {
-				console.warn(`⚠️ Privacy token migration failed for device: ${fromJid} → ${toJid}`, tokenError)
-			}
-			
-			// 4. Update LID mapping for this specific device
-			await lidMapping.storeLIDPNMapping(toJid, fromJid)
-			
-			// 5. CRITICAL: Delete original PN session to prevent state sharing
-			await auth.keys.set({ session: { [fromAddr.toString()]: null } })
-			
-			// 6. Mark this device-specific migration as completed
-			markAsMigrated(deviceSpecificMigrationKey)
-			
-			console.log(`✅ Coordinated device-specific migration completed: ${fromJid} → ${toJid}`)
-		} catch (error) {
-			console.error(`❌ Failed coordinated device-specific migration: ${fromJid} → ${toJid}`, error)
-			throw error
-		}
-	}
-
-	/**
-	 * Comprehensive atomic session migration (following whatsmeow's complete approach)
-	 * Migrates: sessions + identity keys + sender keys + LID mapping
-	 */
-	const migrateSession = async (fromJid: string, toJid: string): Promise<void> => {
-		const fromAddr = jidToSignalProtocolAddress(fromJid)
-		const toAddr = jidToSignalProtocolAddress(toJid)
-		
-		const fromAddrStr = fromAddr.toString()
-		const toAddrStr = toAddr.toString()
-		
-		if (fromAddrStr === toAddrStr) {
-			return // No migration needed
-		}
-		
-		// LRU-based deduplication check (optimal pattern for migration tracking)
-		const migrationKey = `${fromJid}→${toJid}`
-		
-		// Check if migration was recently completed (LRU + TTL)
-		if (isRecentlyMigrated(migrationKey)) {
-			console.log(`✅ Migration already completed recently: ${migrationKey}`)
-			return
-		}
-		
-		// ATOMIC MIGRATION: All operations in single transaction (whatsmeow pattern)
-		return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
-			try {
-				let migrationCount = 0
-				const migrationLog: string[] = []
-				
-				// Check if destination already has a session - if yes, skip migration
-				const toSession = await storage.loadSession(toAddrStr)
-				if (toSession && toSession.haveOpenSession()) {
-					console.log(`✅ Session already exists at ${toJid}, skipping migration`)
-					markAsMigrated(migrationKey) // LRU cache marking
-					return
-				}
-				
-				// 1. MIGRATE SIGNAL SESSION (most critical)
-				const fromSession = await storage.loadSession(fromAddrStr)
-				if (fromSession && fromSession.haveOpenSession()) {
-					await storage.storeSession(toAddrStr, fromSession)
-					migrationCount++
-					migrationLog.push(`session: ${fromAddrStr} → ${toAddrStr}`)
-				}
-				
-				// 4. UPDATE LID MAPPING (Baileys enhancement)
-				try {
-					await lidMapping.storeLIDPNMapping(toJid, fromJid)
-					migrationLog.push(`lid-mapping: ${fromJid} ↔ ${toJid}`)
-				} catch (lidError) {
-					console.warn(`⚠️ LID mapping update failed: ${lidError}`)
-				}
-				
-				// 5. MIGRATION STATISTICS (whatsmeow pattern)
-				if (migrationCount > 0) {
-					console.log(`✅ Atomic migration completed: ${fromJid} → ${toJid}`)
-					console.log(`   Migrated components (${migrationCount}): ${migrationLog.join(', ')}`)
-					markAsMigrated(migrationKey) // LRU cache marking
-				} else {
-					console.log(`ℹ️ No components to migrate: ${fromJid} → ${toJid}`)
-				}
-				
-			} catch (error) {
-				console.error(`❌ Atomic migration failed: ${fromJid} → ${toJid}`, error)
-				throw error // Transaction will rollback
-			}
-		})
-	}
-
 
 	const repository: SignalRepository = {
 		decryptGroupMessage({ group, authorJid, msg }) {
@@ -281,6 +152,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				console.log(`✅ Sender key storage verification: ${verifyKey ? 'SUCCESS' : 'FAILED'}`)
 			})
 		},
+
 		async decryptMessage({ jid, type, ciphertext }) {
 			// WHATSMEOW PATTERN: Buffered decryption to prevent reprocessing same message
 			// Generate cache key from jid + ciphertext hash to prevent double ratchet advancement
@@ -333,9 +205,62 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					switch (type) {
 						case 'pkmsg':
 							console.log(`🔐 Decrypting PreKey message from ${jid}`)
-							// WHATSMEOW PATTERN: PreKey messages are handled with special session management
-							// The session builder automatically closes old sessions when processing PreKey bundles
+							
+							// CRITICAL FIX: Backup existing session before PreKey processing
+							// This prevents "Closing open session in favor of incoming prekey bundle" 
+							const existingSession = await storage.loadSession(addr.toString())
+							let backupSessionData: any = null
+							
+							if (existingSession && existingSession.haveOpenSession()) {
+								console.log(`💾 Backing up existing session before PreKey processing: ${jid}`)
+								backupSessionData = existingSession.serialize()
+							}
+							
+							// Process the PreKey message (this may create a new session)
 							result = await session.decryptPreKeyWhisperMessage(ciphertext)
+							
+							// WHATSMEOW PATTERN: Restore the backed up session alongside the new PreKey session
+							// This ensures multiple sessions coexist per device as intended by WhatsApp's protocol
+							if (backupSessionData) {
+								console.log(`🔄 Restoring backed up session alongside new PreKey session: ${jid}`)
+								try {
+									// Get the current session record after PreKey processing
+									const currentRecord = await storage.loadSession(addr.toString())
+									
+									if (currentRecord) {
+										// Deserialize the backup session
+										const backupSession = libsignal.SessionRecord.deserialize(backupSessionData)
+										
+										// CRITICAL: Merge sessions by copying the backup session's states
+										// into the current record. This preserves both old and new sessions.
+										const backupStates = (backupSession as any).sessions || []
+										const currentStates = (currentRecord as any).sessions || []
+										
+										// Only add backup states that aren't already present
+										for (const backupState of backupStates) {
+											const stateExists = currentStates.some((currentState: any) => {
+												// Compare session states by their chain keys or other unique identifiers
+												return JSON.stringify(currentState) === JSON.stringify(backupState)
+											})
+											
+											if (!stateExists) {
+												currentStates.push(backupState)
+												console.log(`✅ Restored session state to coexist with PreKey session: ${jid}`)
+											}
+										}
+										
+										// Update the session record with merged states
+										;(currentRecord as any).sessions = currentStates
+										
+										// Store the updated session record
+										await storage.storeSession(addr.toString(), currentRecord)
+										console.log(`💾 Session coexistence established for ${jid}`)
+									}
+								} catch (restoreError: any) {
+									console.warn(`⚠️ Session restore failed for ${jid}:`, restoreError?.message || restoreError)
+									// Continue with PreKey session only if restore fails
+								}
+							}
 							break
 						case 'msg':
 							console.log(`🔐 Decrypting regular message from ${jid}`)
@@ -385,6 +310,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				throw error
 			}
 		},
+
 		async encryptMessage({ jid, data }) {
 			// WHATSMEOW EXACT LOGIC: Always prefer LID when available
 			let encryptionJid = jid
@@ -491,6 +417,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				throw encryptionError
 			}
 		},
+
 		async encryptGroupMessage({ group, meId, data }) {
 			const senderName = jidToSignalSenderKeyName(group, meId)
 			const builder = new GroupSessionBuilder(storage)
@@ -514,6 +441,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				}
 			})
 		},
+
 		async injectE2ESession({ jid, session }) {
 			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
 			const transformedSession: any = {
@@ -547,39 +475,46 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				// not identity mappings. LID-PN relationships are independent of encryption sessions.
 			})
 		},
+
 		jidToSignalProtocolAddress(jid) {
 			return jidToSignalProtocolAddress(jid).toString()
 		},
+
 		/**
 		 * Store LID-PN mapping (for compatibility with whatsmeow pattern)
 		 */
 		async storeLIDPNMapping(lid: string, pn: string) {
 			await lidMapping.storeLIDPNMapping(lid, pn)
 		},
+
 		/**
 		 * Get LID mapping store instance
 		 */
 		getLIDMappingStore() {
 			return lidMapping
 		},
+
 		/**
 		 * Get privacy token manager instance
 		 */
 		getPrivacyTokenManager() {
 			return privacyTokenManager
 		},
+
 		/**
 		 * WHATSMEOW PATTERN: Session health validation
 		 */
 		async validateSession(jid: string) {
 			return validateSessionExists(jid)
 		},
+
 		/**
 		 * WHATSMEOW PATTERN: Session recreation decision logic
 		 */
 		shouldRecreateSession(jid: string, retryCount: number) {
 			return shouldRecreateSession(jid, retryCount)
 		},
+
 		/**
 		 * WHATSMEOW PATTERN: Force session recreation when double ratchet becomes unstable
 		 */
@@ -613,6 +548,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				}
 			})
 		},
+
 		/**
 		 * WHATSMEOW EXACT: MigratePNToLID - Device-specific ONE-WAY migration from PN to LID
 		 * CRITICAL: Each device session must be migrated independently to prevent cross-device conflicts
