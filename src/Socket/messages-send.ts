@@ -240,11 +240,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	/** Fetch all the devices we've to send a message to */
-	const getUSyncDevices = async (jids: string[], useCache: boolean, ignoreZeroDevices: boolean): Promise<DeviceWithWireJid[]> => {
+	const getUSyncDevices = async (jids: string[], useCache: boolean, ignoreZeroDevices: boolean, disableAutoMigration = false): Promise<DeviceWithWireJid[]> => {
 		const deviceResults: DeviceWithWireJid[] = []
 
 		// DEBUG: Log input JIDs to understand what's being passed
-		logger.debug({ jids, useCache, ignoreZeroDevices }, '🔍 getUSyncDevices called with JIDs')
+		logger.debug({ jids, useCache, ignoreZeroDevices, disableAutoMigration }, '🔍 getUSyncDevices called with JIDs')
 
 		if (!useCache) {
 			logger.debug('not using cache for devices')
@@ -339,11 +339,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			
 			// WHATSMEOW EXACT: Automatic PN→LID migration when LID mapping exists
 			// Even if user typed a phone number, prefer LID when available
-			try {
-				const lidMapping = signalRepository.getLIDMappingStore()
-				const lidForPN = await lidMapping.getLIDForPN(jid)
-				
-				if (lidForPN && lidForPN.includes('@lid')) {
+			// BUT: Skip auto-migration if we're doing intentional multi-session delivery
+			if (!disableAutoMigration) {
+				try {
+					const lidMapping = signalRepository.getLIDMappingStore()
+					const lidForPN = await lidMapping.getLIDForPN(jid)
+					
+					if (lidForPN && lidForPN.includes('@lid')) {
 					// Found LID mapping - use LID instead of PN (whatsmeow pattern)
 					logger.info({ originalPN: jid, lidAddress: lidForPN }, '✅ Auto-migrating PN to LID (whatsmeow LID priority)')
 					
@@ -376,8 +378,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					// Skip normal PN processing since we're using LID
 					continue
 				}
-			} catch (error) {
-				logger.debug({ jid, error }, 'Failed to check LID mapping during PN processing')
+				} catch (error) {
+					logger.debug({ jid, error }, 'Failed to check LID mapping during PN processing')
+				}
+			} else {
+				logger.debug({ jid }, '⏭️ Skipping auto-migration for multi-session delivery')
 			}
 			
 			// Continue with normal PN processing if no LID mapping found
@@ -1125,7 +1130,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								}, 'Session-specific device enumeration for consistent addressing')
 								
 								// Enumerate devices for this specific session pair
-								const sessionDevices = await getUSyncDevices([senderIdentity, targetSession], false, false)
+								// DISABLE AUTO-MIGRATION: We want to preserve exact session types for consistency  
+								const sessionDevices = await getUSyncDevices([senderIdentity, targetSession], false, false, true)
 								
 								// Add devices with session context
 								devices.push(...sessionDevices.map(device => ({
