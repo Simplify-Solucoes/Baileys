@@ -1195,197 +1195,62 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					allJids.push(jid)
 				}
 
-				// SESSION ISOLATION: Prevent cross-device session interference
-				// Only include the current device session to avoid conflicts with other own devices
+				// SMART SESSION MANAGEMENT: Prevent corruption but maintain delivery
+				// Only isolate sessions during session management, not message delivery
 				const currentDeviceId = authState.creds.me?.id?.split(':')[1] || '0'
 				const currentDeviceJid = `${mePnUser}:${currentDeviceId}@s.whatsapp.net`
+				const mainDeviceJid = `${mePnUser}@s.whatsapp.net` // Device .0
 				
-				// Filter out OTHER own devices to prevent session interference
-				const isolatedMeJids = meJids.filter(jid => {
-					// Keep LID sessions (they don't interfere)
+				// For session management: only check sessions we can safely manage
+				const managedMeJids = meJids.filter(jid => {
+					// Always manage LID sessions (they don't interfere)
 					if (jid.includes('@lid')) return true
 					
-					// For PN sessions, only keep current device
+					// For PN sessions: manage current device + main device (.0)
 					if (jid.includes('@s.whatsapp.net')) {
-						return jid === currentDeviceJid || jid === `${mePnUser}@s.whatsapp.net`
+						return jid === currentDeviceJid || jid === mainDeviceJid
 					}
 					
 					return true
 				})
 				
-				// Log session isolation
-				const removedSessions = meJids.filter(jid => !isolatedMeJids.includes(jid))
-				if (removedSessions.length > 0) {
-					logger.info({
-						originalOwnDevices: meJids.length,
-						isolatedOwnDevices: isolatedMeJids.length,
-						removedForIsolation: removedSessions,
-						currentDevice: currentDeviceJid,
-						reason: 'preventing_cross_device_session_interference'
-					}, '🔒 Session isolation: Filtering out other own device sessions to prevent interference')
-				}
+				// For message delivery: use ALL devices but with safety checks
+				const deliveryMeJids = meJids // Keep all devices for delivery
 				
-				// Update the device lists to use isolated sessions
-				const isolatedAllJids = [...otherJids, ...isolatedMeJids]
+				// Log session management strategy
+				const skippedSessionDevices = meJids.filter(jid => !managedMeJids.includes(jid))
+				logger.info({
+					totalOwnDevices: meJids.length,
+					managedSessions: managedMeJids,
+					deliveryTargets: deliveryMeJids,
+					skippedSessionManagement: skippedSessionDevices,
+					currentDevice: currentDeviceJid,
+					mainDevice: mainDeviceJid,
+					strategy: 'smart_session_management'
+				}, '🧠 Smart session management: Current device + main device (.0) managed, all devices targeted for delivery')
 				
-				// Enhanced session corruption detection and analysis (now with isolation)
-				// Check for corrupted sessions with remaining own devices
-				const ownDeviceSessionCheck = isolatedMeJids.filter(jid => jid.includes(mePnUser || ''))
-				if (ownDeviceSessionCheck.length > 0) {
-					try {
-						const sessionIds = ownDeviceSessionCheck.map(jid => signalRepository.jidToSignalProtocolAddress(jid))
-						const sessions = await authState.keys.get('session', sessionIds)
-						
-						let corruptedSessions = []
-						let sessionAnalysis = []
-						
-						for (let i = 0; i < sessionIds.length; i++) {
-							const sessionId = sessionIds[i]!
-							const jid = ownDeviceSessionCheck[i]!
-							const sessionData = sessions[sessionId]
-							
-							let analysis = {
-								jid,
-								sessionId,
-								hasData: !!sessionData,
-								dataSize: sessionData ? sessionData.length : 0,
-								isCorrupted: false,
-								corruptionReason: ''
-							}
-							
-							if (!sessionData) {
-								analysis.isCorrupted = true
-								analysis.corruptionReason = 'missing_session_data'
-								corruptedSessions.push(sessionId)
-							} else {
-								// Check if session data is valid (has proper structure)
-								try {
-									const sessionStr = sessionData.toString()
-									if (!sessionStr || sessionStr.length < 10) {
-										analysis.isCorrupted = true
-										analysis.corruptionReason = 'invalid_session_size'
-										corruptedSessions.push(sessionId)
-									} else {
-										// Additional validation - check for proper session structure
-										if (sessionStr.includes('_sessions') || sessionStr.includes('version')) {
-											analysis.corruptionReason = 'valid_session'
-										} else {
-											analysis.isCorrupted = true
-											analysis.corruptionReason = 'malformed_session_structure'
-											corruptedSessions.push(sessionId)
-										}
-									}
-								} catch (parseError) {
-									analysis.isCorrupted = true
-									analysis.corruptionReason = `parse_error: ${parseError}`
-									corruptedSessions.push(sessionId)
-								}
-							}
-							
-							sessionAnalysis.push(analysis)
-						}
-						
-						// Log detailed session analysis
-						logger.info({
-							totalOwnDevices: ownDeviceSessionCheck.length,
-							sessionAnalysis,
-							corruptedCount: corruptedSessions.length,
-							currentDevice: authState.creds.me?.id,
-							currentLID: authState.creds.me?.lid
-						}, '🔍 Own device session integrity analysis')
-						
-						if (corruptedSessions.length > 0) {
-							logger.warn({
-								corruptedSessions,
-								totalOwnDevices: ownDeviceSessionCheck.length,
-								corruptedCount: corruptedSessions.length,
-								sessionAnalysis: sessionAnalysis.filter(s => s.isCorrupted)
-							}, '⚠️ Detected corrupted sessions with own devices - analyzing corruption patterns')
-							
-							// Check for patterns in corruption
-							const corruptionPatterns = {
-								missingData: sessionAnalysis.filter(s => s.corruptionReason === 'missing_session_data').length,
-								invalidSize: sessionAnalysis.filter(s => s.corruptionReason === 'invalid_session_size').length,
-								malformed: sessionAnalysis.filter(s => s.corruptionReason === 'malformed_session_structure').length,
-								parseErrors: sessionAnalysis.filter(s => s.corruptionReason.includes('parse_error')).length
-							}
-							
-							logger.warn({
-								corruptionPatterns,
-								suspectedCause: corruptionPatterns.missingData > 0 ? 'device_conflict' : 
-								               corruptionPatterns.malformed > 0 ? 'session_overwrite' : 'unknown'
-							}, '🕵️ Session corruption pattern analysis')
-							
-							// Force session recreation for corrupted own devices
-							const corruptedJids = corruptedSessions.map(sessionId => {
-								// Convert back from signal address to JID
-								const parts = sessionId.split('.')
-								if (parts.length === 2) {
-									return `${parts[0]}:${parts[1]}@s.whatsapp.net`
-								} else {
-									const lidPart = parts[0]?.replace('_1', '')
-									return lidPart ? `${lidPart}@lid` : ''
-								}
-							}).filter(jid => jid) // Remove empty JIDs
-							
-							if (corruptedJids.length > 0) {
-								logger.info({ 
-									corruptedJids, 
-									recreationAttempt: true,
-									previousCorruptionReasons: sessionAnalysis.filter(s => s.isCorrupted).map(s => s.corruptionReason)
-								}, '🔄 Forcing session refresh for corrupted own devices')
-								await assertSessions(corruptedJids, true) // Force recreation
-								
-								// Verify sessions were actually recreated
-								const newSessionIds = corruptedJids.map(jid => signalRepository.jidToSignalProtocolAddress(jid))
-								const newSessions = await authState.keys.get('session', newSessionIds)
-								
-								let recreationResults = []
-								for (let i = 0; i < newSessionIds.length; i++) {
-									const sessionId = newSessionIds[i]!
-									const jid = corruptedJids[i]!
-									const newSessionData = newSessions[sessionId]
-									
-									recreationResults.push({
-										jid,
-										sessionId,
-										recreated: !!newSessionData,
-										newDataSize: newSessionData ? newSessionData.length : 0
-									})
-								}
-								
-								logger.info({
-									recreationResults,
-									successfulRecreations: recreationResults.filter(r => r.recreated).length,
-									failedRecreations: recreationResults.filter(r => !r.recreated).length
-								}, '✅ Session recreation verification results')
-							}
-						} else {
-							logger.debug({ sessionAnalysis }, '✅ All own device sessions are healthy')
-						}
-					} catch (error: any) {
-						logger.error({ error: error?.message, stack: error?.stack }, 'Failed to check own device session integrity')
-					}
-				}
+				// Session management is now handled by smart filtering above
+				// assertSessions will handle any missing sessions automatically
 
-				await assertSessions(isolatedAllJids, false)
+				await assertSessions([...otherJids, ...deliveryMeJids], false)
 
 				logger.debug({ 
 					originalMeJids: meJids,
-					isolatedMeJids, 
+					managedMeJids, 
+					deliveryMeJids,
 					otherJids, 
-					totalDevices: isolatedAllJids.length,
-					ownDeviceCount: isolatedMeJids.length,
+					totalDevices: [...otherJids, ...deliveryMeJids].length,
+					ownDeviceCount: deliveryMeJids.length,
 					otherDeviceCount: otherJids.length,
-					sessionIsolationApplied: removedSessions.length > 0
-				}, '📤 DSM device allocation for message sending (with session isolation)')
+					smartSessionManagement: skippedSessionDevices.length > 0
+				}, '📤 DSM device allocation for message sending (with smart session management)')
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
-					// For own devices: use meMsg as main message (it's already DSM) - now isolated
-					createParticipantNodes(isolatedMeJids, meMsg, extraAttrs),
+					// For own devices: use meMsg as main message (it's already DSM) - deliver to all
+					createParticipantNodes(deliveryMeJids, meMsg, extraAttrs),
 					// For other devices: pass DSM so own devices of recipients get DSM
 					createParticipantNodes(otherJids, message, extraAttrs, meMsg)
 				])
