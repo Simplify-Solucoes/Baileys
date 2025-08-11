@@ -229,10 +229,14 @@ export const decryptMessageNode = (
 								let senderEncryptionJid = sender
 								
 								// Store LID mapping when detected from message metadata
+								// CRITICAL FIX: 1:1 device mapping - each PN device maps to corresponding LID device
 								if (senderAlt && isLidUser(senderAlt) && isJidUser(sender)) {
+									const senderDecoded = jidDecode(sender)
+									const senderDevice = senderDecoded?.device || 0
+									
 									try {
 										await repository.storeLIDPNMapping(senderAlt, sender)
-										logger.debug({ sender, senderAlt }, 'Stored LID mapping from message metadata')
+										logger.debug({ sender, senderAlt, device: senderDevice }, 'Stored 1:1 LID mapping from device metadata')
 									} catch (error) {
 										logger.error({ sender, senderAlt, error }, 'Failed to store LID mapping from metadata')
 									}
@@ -240,13 +244,18 @@ export const decryptMessageNode = (
 								
 								// WHATSMEOW EXACT: LID priority logic (message.go:949-961)
 								// CRITICAL FIX: Don't migrate during decryption - prefer existing LID sessions
+								// CRITICAL FIX: 1:1 device mapping - each device gets separate LID session
 								if (isJidUser(sender) && !sender.includes('bot')) {
+									const senderDecoded = jidDecode(sender)
+									const senderDevice = senderDecoded?.device || 0
+									
 									if (senderAlt && isLidUser(senderAlt)) {
 										// PRIORITY 1: Use LID from message metadata (exact whatsmeow pattern)
 										senderEncryptionJid = senderAlt
-										logger.debug({ sender, senderAlt }, 'Using LID from message metadata for decryption')
+										logger.debug({ sender, senderAlt, device: senderDevice }, 'Using LID from message metadata for decryption')
 									} else {
 										// PRIORITY 2: Check for existing LID sessions (whatsmeow LID priority)
+										// 1:1 device mapping - each PN device can have its own LID mapping
 										try {
 											const lidStore = repository.getLIDMappingStore()
 											const storedLid = await lidStore.getLIDForPN(sender)
@@ -257,18 +266,18 @@ export const decryptMessageNode = (
 												
 												if (hasLIDSession) {
 													senderEncryptionJid = storedLid
-													logger.info({ sender, storedLid }, '✅ Using existing LID session for decryption (LID priority)')
+													logger.info({ sender, storedLid, device: senderDevice }, '✅ Using existing 1:1 LID session for decryption')
 												} else {
 													// No LID session exists - migrate during decryption as fallback
-													logger.warn({ sender, storedLid }, '⚠️ LID mapping exists but no LID session - migrating during decryption')
+													logger.warn({ sender, storedLid, device: senderDevice }, '⚠️ 1:1 LID mapping exists but no LID session - migrating during decryption')
 													await repository.migrateSession(sender, storedLid)
 													senderEncryptionJid = storedLid
 												}
 											} else {
-												logger.debug({ sender }, 'No LID mapping found for PN sender')
+												logger.debug({ sender, device: senderDevice }, 'No 1:1 LID mapping found for PN device')
 											}
 										} catch (lidError: any) {
-											logger.error({ sender, error: lidError.message }, 'Failed to check LID mapping during decryption')
+											logger.error({ sender, device: senderDevice, error: lidError.message }, 'Failed to check 1:1 LID mapping during decryption')
 										}
 									}
 								}

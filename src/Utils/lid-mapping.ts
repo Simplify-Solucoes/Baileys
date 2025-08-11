@@ -40,32 +40,35 @@ export class LIDMappingStore {
         
         if (!lidDecoded || !pnDecoded) return
         
-        // CRITICAL FIX: Handle that multiple PN devices can map to the same LID user
-        // PN devices have device IDs, LID users typically don't, but we need :0 for main devices
-        const pnWithDevice = pnDecoded.device !== undefined ? `${pnDecoded.user}:${pnDecoded.device}` : `${pnDecoded.user}:0`
-        const lidUser = lidDecoded.user  // LID user without device suffix (multiple PN devices → same LID user)
+        // CRITICAL FIX: 1:1 device mapping - each PN device maps to corresponding LID device
+        // This prevents double ratchet corruption by maintaining separate sessions per device
+        const pnDevice = pnDecoded.device !== undefined ? pnDecoded.device : 0
+        const lidDevice = lidDecoded.device !== undefined ? lidDecoded.device : 0
         
-        console.log(`📱 Storing DEVICE-SPECIFIC LID mapping: PN device ${pnWithDevice} → LID user ${lidUser}`)
+        const pnWithDevice = `${pnDecoded.user}:${pnDevice}`
+        const lidWithDevice = `${lidDecoded.user}:${lidDevice}`
+        
+        console.log(`📱 Storing 1:1 DEVICE LID mapping: PN device ${pnWithDevice} → LID device ${lidWithDevice}`)
         
         // Redis-optimized: Direct storage, no redundant cache
         await this.keys.transaction(async () => {
-            // Store bidirectional mapping - Each PN device maps to same LID user but maintains separate sessions
+            // Store bidirectional mapping - 1:1 device mapping for separate sessions
             await this.keys.set({
                 'lid-mapping': {
-                    [pnWithDevice]: lidUser,                    // "554396160286:43" -> "102765716062358"
-                    [`${lidUser}_1_${pnWithDevice}`]: pnWithDevice // "102765716062358_1_554396160286:43" -> "554396160286:43" (device-specific reverse)
+                    [pnWithDevice]: lidWithDevice,                    // "554396160286:43" -> "102765716062358:43"
+                    [`${lidWithDevice}_1_${pnWithDevice}`]: pnWithDevice // "102765716062358:43_1_554396160286:43" -> "554396160286:43" (1:1 reverse)
                 }
             })
         })
         
-        // Update sync cache after successful storage (use device-specific for immediate access)
-        this.updateSyncCache(pnWithDevice, lidUser)
+        // Update sync cache after successful storage (1:1 device mapping)
+        this.updateSyncCache(pnWithDevice, lidWithDevice)
         
-        console.log(`✅ DEVICE-SPECIFIC LID mapping stored: PN device ${pnWithDevice} → LID user ${lidUser}`)
+        console.log(`✅ 1:1 DEVICE LID mapping stored: PN device ${pnWithDevice} → LID device ${lidWithDevice}`)
     }
 
     /**
-     * Get LID for PN - DEVICE-SPECIFIC LOOKUP to prevent unsupported device migration
+     * Get LID for PN - 1:1 DEVICE MAPPING to prevent double ratchet corruption
      * Redis-optimized: Direct lookup, no cache layer
      */
     async getLIDForPN(pn: string): Promise<string | null> {
@@ -74,28 +77,26 @@ export class LIDMappingStore {
         const decoded = jidDecode(pn)
         if (!decoded) return null
         
-        // CRITICAL FIX: Look up by PN device key (each PN device has separate mapping to same LID user)
-        // Add :0 for main devices to match storage format
-        const pnDeviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : `${decoded.user}:0`
-        const stored = await this.keys.get('lid-mapping', [pnDeviceKey])
-        let lidUser = stored[pnDeviceKey]
+        // CRITICAL FIX: 1:1 device mapping - each PN device maps to corresponding LID device
+        // This maintains separate sessions per device to prevent double ratchet corruption
+        const pnDevice = decoded.device !== undefined ? decoded.device : 0
+        const pnDeviceKey = `${decoded.user}:${pnDevice}`
         
-        // CRITICAL: Do NOT use legacy user-level mappings - only device-specific
-        // This prevents migration of unsupported devices when one device has LID migration
-        if (!lidUser) {
-            console.log(`🚫 No device-specific LID mapping found for PN device ${pn} - NOT falling back to user-level mapping`)
+        const stored = await this.keys.get('lid-mapping', [pnDeviceKey])
+        let lidWithDevice = stored[pnDeviceKey]
+        
+        if (!lidWithDevice) {
+            console.log(`🚫 No 1:1 LID mapping found for PN device ${pn} - each device needs separate mapping`)
             return null
         }
         
-        if (typeof lidUser !== 'string') return null
+        if (typeof lidWithDevice !== 'string') return null
         
         // Update sync cache for immediate access
-        this.updateSyncCache(pnDeviceKey, lidUser)
+        this.updateSyncCache(pnDeviceKey, lidWithDevice)
         
-        // CRITICAL: Push device ID from PN to LID to maintain session separation
-        // Even though native LID doesn't have device IDs, we need them for session targeting
-        const deviceId = decoded.device !== undefined ? decoded.device : '0'
-        return `${lidUser}:${deviceId}@lid`
+        // Return the exact 1:1 mapped LID device
+        return `${lidWithDevice}@lid`
     }
 
     /**
