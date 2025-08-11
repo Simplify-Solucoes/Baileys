@@ -656,8 +656,16 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						if (fromSession && fromSession.haveOpenSession()) {
 							console.log(`🔄 Migrating device ${deviceId}: ${fromAddrStr} → ${toAddrStr}`)
 							
-							// WHATSMEOW APPROACH: MOVE session to prevent ratchet conflicts
-							await storage.storeSession(toAddrStr, fromSession)
+							// CRITICAL FIX: Create a deep copy to prevent ratchet corruption
+							// Serialize the session to break all references, then deserialize to create a new object
+							const sessionBytes = fromSession.serialize()
+							const copiedSession = libsignal.SessionRecord.deserialize(sessionBytes)
+							
+							// Store the COPY at LID address - not a reference!
+							await storage.storeSession(toAddrStr, copiedSession)
+							console.log(`💾 Session data deep-copied and migrated for device ${deviceId}`)
+							
+							// Delete the original PN session to complete the move
 							await auth.keys.set({ session: { [fromAddrStr]: null } })
 							
 							console.log(`✅ Device ${deviceId} migrated successfully`)
