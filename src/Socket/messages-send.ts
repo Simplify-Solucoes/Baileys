@@ -331,14 +331,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					if (hasLIDSession) {
 						logger.info({ lidForPN }, '✅ Found existing LID session for migrated address')
 						deviceResults.push({ 
-							user: lidDecoded!.user, 
-							device: lidDecoded?.device || 0 
+							user: user!, // Keep original PN user ID to avoid duplicates
+							device: decoded?.device || 0 
 						})
 					} else {
 						logger.warn({ lidForPN }, '❌ No LID session found for migrated address - will create new LID session')
 						deviceResults.push({ 
-							user: lidDecoded!.user, 
-							device: lidDecoded?.device || 0 
+							user: user!, // Keep original PN user ID to avoid duplicates
+							device: decoded?.device || 0 
 						})
 					}
 					
