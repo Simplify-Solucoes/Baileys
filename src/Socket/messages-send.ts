@@ -779,32 +779,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		let isLid = server === 'lid'
 		const isNewsletter = server === 'newsletter'
 		
-		// WHATSMEOW EXACT: LID Priority - Automatic PN→LID migration when LID mapping exists
-		// Even if user typed a phone number, prefer LID when available (whatsmeow pattern)
+		// The jid passed here should already be the correct one (LID if migrated)
+		// from sendMessage, so we don't need to check again
 		let finalJid = jid
-		if (!isLid && !isGroup && !isStatus && !isNewsletter && server === 's.whatsapp.net') {
-			try {
-				const lidMapping = signalRepository.getLIDMappingStore()
-				const lidForPN = await lidMapping.getLIDForPN(jid)
-				
-				if (lidForPN && lidForPN.includes('@lid')) {
-					// Found LID mapping - automatically migrate to LID (whatsmeow LID priority)
-					logger.info({ 
-						originalPN: jid, 
-						lidAddress: lidForPN,
-						reason: 'whatsmeow_lid_priority'
-					}, '🔄 Auto-migrating message from PN to LID address')
-					
-					finalJid = lidForPN
-					const lidDecoded = jidDecode(lidForPN)
-					user = lidDecoded!.user
-					server = 'lid'
-					isLid = true
-				}
-			} catch (error) {
-				logger.debug({ jid, error }, 'Failed to check LID mapping during message sending')
-			}
-		}
 
 		// WHATSMEOW PATTERN: Use LID identity when sending to HiddenUserServer (lid)
 		let ownId = meId
@@ -1731,7 +1708,35 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						: disappearingMessagesInChat
 				await groupToggleEphemeral(jid, value)
 			} else {
-				const fullMsg = await generateWAMessage(jid, content, {
+				// WHATSMEOW EXACT: Apply LID priority before generating message
+				// This ensures message key has correct remoteJid for syncing to own devices
+				let messageGenerationJid = jid
+				const { server } = jidDecode(jid)!
+				const isGroup = server === 'g.us'
+				const isStatus = jid === 'status@broadcast'
+				const isLid = server === 'lid'
+				const isNewsletter = server === 'newsletter'
+				
+				if (!isLid && !isGroup && !isStatus && !isNewsletter && server === 's.whatsapp.net') {
+					try {
+						const lidMapping = signalRepository.getLIDMappingStore()
+						const lidForPN = await lidMapping.getLIDForPN(jid)
+						
+						if (lidForPN && lidForPN.includes('@lid')) {
+							logger.info({ 
+								originalPN: jid, 
+								lidAddress: lidForPN,
+								reason: 'message_generation_lid_priority'
+							}, '🔄 Auto-migrating message generation from PN to LID for correct sync')
+							
+							messageGenerationJid = lidForPN
+						}
+					} catch (error) {
+						logger.debug({ jid, error }, 'Failed to check LID mapping during message generation')
+					}
+				}
+				
+				const fullMsg = await generateWAMessage(messageGenerationJid, content, {
 					logger,
 					userJid,
 					getUrlInfo: text =>
@@ -1785,7 +1790,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					)
 				}
 
-				await relayMessage(jid, fullMsg.message!, {
+				await relayMessage(messageGenerationJid, fullMsg.message!, {
 					messageId: fullMsg.key.id!,
 					useCachedGroupMetadata: options.useCachedGroupMetadata,
 					additionalAttributes,

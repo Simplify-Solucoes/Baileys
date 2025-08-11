@@ -576,8 +576,8 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		},
 
 		/**
-		 * WHATSMEOW EXACT: MigratePNToLID - Device-specific ONE-WAY migration from PN to LID
-		 * CRITICAL: Each device session must be migrated independently to prevent cross-device conflicts
+		 * WHATSMEOW EXACT: MigratePNToLID - Migrate ALL devices in single transaction
+		 * ALIGNMENT: Following whatsmeow's approach of user-level migration
 		 */
 		async migrateSession(fromJid: string, toJid: string) {
 			// WHATSMEOW RULE: Only migrate PN → LID, never the reverse
@@ -589,70 +589,88 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				return
 			}
 			
-			// Device-specific migration - LID mapping already returns device-specific LIDs
-			const fromAddr = jidToSignalProtocolAddress(fromJid)
-			const toAddr = jidToSignalProtocolAddress(toJid)
-			const deviceSpecificMigrationKey = `${fromAddr.toString()}→${toAddr.toString()}`
+			// Extract user parts for migration tracking
+			const fromDecoded = jidDecode(fromJid)
+			const toDecoded = jidDecode(toJid)
+			if (!fromDecoded || !toDecoded) return
 			
-			// Check if THIS SPECIFIC DEVICE was already migrated (not just the user)
-			if (isRecentlyMigrated(deviceSpecificMigrationKey)) {
-				console.log(`✅ Device-specific migration already completed: ${fromJid} → ${toJid}`)
+			const pnUser = fromDecoded.user
+			const lidUser = toDecoded.user
+			const triggerDevice = fromDecoded.device || 0
+			
+			// User-level migration key
+			const userMigrationKey = `${pnUser}→${lidUser}`
+			
+			// Check if user was already migrated
+			if (isRecentlyMigrated(userMigrationKey)) {
+				console.log(`✅ User migration already completed: ${pnUser} → ${lidUser}`)
 				return
 			}
 			
-			// Device-specific migration tracking (whatsmeow pattern)
+			console.log(`🔄 WHATSMEOW MigratePNToLID: ${pnUser} → ${lidUser} (triggered by device ${triggerDevice})`)
 			
-			console.log(`🔄 whatsmeow device-specific MigratePNToLID: ${fromJid} → ${toJid}`)
-			
-			// ATOMIC MIGRATION: All operations in single transaction (whatsmeow pattern)
+			// ATOMIC MIGRATION: All devices in single transaction (whatsmeow pattern)
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				try {
-					const fromAddrStr = fromAddr.toString()
-					const toAddrStr = toAddr.toString()
-					
-					// Check if destination already has a session for this device
-					const toSession = await storage.loadSession(toAddrStr)
-					if (toSession && toSession.haveOpenSession()) {
-						console.log(`✅ LID session already exists for device ${toJid}, skipping migration`)
-						markAsMigrated(deviceSpecificMigrationKey)
-						return
-					}
-					
-					// WHATSMEOW ALIGNMENT: Actually migrate session data from PN to LID
-					// This is required for multi-device session consistency
-					
-					const fromSession = await storage.loadSession(fromAddrStr)
-					if (fromSession && fromSession.haveOpenSession()) {
-						console.log(`🔄 Migrating session data: ${fromJid} → ${toJid}`)
-						
-						// WHATSMEOW APPROACH: MOVE session to prevent ratchet conflicts  
-						// CRITICAL: Don't copy - move the session to maintain ratchet state integrity
-						console.log(`📤 Moving session from ${fromAddrStr} to ${toAddrStr}`)
-						
-						// Store at LID address (move, not copy)
-						await storage.storeSession(toAddrStr, fromSession)
-						
-						// WHATSMEOW PATTERN: Delete from PN address after successful migration
-						await auth.keys.set({ session: { [fromAddrStr]: null } })
-						
-						console.log(`✅ Session moved successfully: ${fromJid} → ${toJid}`)
-						
-						// Store the mapping after successful session migration (use original LID for mapping)
-						await lidMapping.storeLIDPNMapping(toJid, fromJid)
-						console.log(`🔗 LID mapping stored after session migration: ${fromJid} ↔ ${toJid}`)
-						
-						markAsMigrated(deviceSpecificMigrationKey)
-						return
-					}
-					
-					// If no session exists, just store the mapping
-					console.log(`ℹ️ No PN session to migrate for device: ${fromJid}`)
+					// First, store the user-level mapping
 					await lidMapping.storeLIDPNMapping(toJid, fromJid)
-					console.log(`🔗 LID mapping stored without session: ${fromJid} ↔ ${toJid}`)
-					markAsMigrated(deviceSpecificMigrationKey)
+					console.log(`🔗 LID mapping stored: ${pnUser} ↔ ${lidUser}`)
+					
+					// Get all sessions to find devices for this user
+					const allSessions = await auth.keys.get('session', [])
+					const sessionPrefix = `${pnUser}.`
+					
+					// Find all device sessions for this PN user
+					const devicesToMigrate: number[] = []
+					for (const sessionId of Object.keys(allSessions)) {
+						if (sessionId.startsWith(sessionPrefix) && allSessions[sessionId]) {
+							// Extract device ID from session ID (format: "user.device")
+							const devicePart = sessionId.substring(sessionPrefix.length)
+							const deviceId = parseInt(devicePart) || 0
+							devicesToMigrate.push(deviceId)
+						}
+					}
+					
+					console.log(`📱 Found ${devicesToMigrate.length} devices to migrate for user ${pnUser}: ${devicesToMigrate.join(', ')}`)
+					
+					// Migrate each device session
+					for (const deviceId of devicesToMigrate) {
+						const fromDeviceJid = deviceId === 0 ? `${pnUser}@s.whatsapp.net` : `${pnUser}:${deviceId}@s.whatsapp.net`
+						const toDeviceJid = deviceId === 0 ? `${lidUser}@lid` : `${lidUser}:${deviceId}@lid`
+						
+						const fromAddr = jidToSignalProtocolAddress(fromDeviceJid)
+						const toAddr = jidToSignalProtocolAddress(toDeviceJid)
+						
+						const fromAddrStr = fromAddr.toString()
+						const toAddrStr = toAddr.toString()
+						
+						// Check if destination already has a session
+						const toSession = await storage.loadSession(toAddrStr)
+						if (toSession && toSession.haveOpenSession()) {
+							console.log(`✅ LID session already exists for device ${deviceId}, skipping`)
+							continue
+						}
+						
+						// Load source session
+						const fromSession = await storage.loadSession(fromAddrStr)
+						if (fromSession && fromSession.haveOpenSession()) {
+							console.log(`🔄 Migrating device ${deviceId}: ${fromAddrStr} → ${toAddrStr}`)
+							
+							// WHATSMEOW APPROACH: MOVE session to prevent ratchet conflicts
+							await storage.storeSession(toAddrStr, fromSession)
+							await auth.keys.set({ session: { [fromAddrStr]: null } })
+							
+							console.log(`✅ Device ${deviceId} migrated successfully`)
+						} else {
+							console.log(`ℹ️ No session to migrate for device ${deviceId}`)
+						}
+					}
+					
+					markAsMigrated(userMigrationKey)
+					console.log(`✅ User migration completed: ${pnUser} → ${lidUser} (${devicesToMigrate.length} devices)`)
 					
 				} catch (error) {
-					console.error(`❌ Device-specific PN→LID migration failed: ${fromJid} → ${toJid}`, error)
+					console.error(`❌ User PN→LID migration failed: ${pnUser} → ${lidUser}`, error)
 					throw error
 				}
 			})
