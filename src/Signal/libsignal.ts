@@ -607,67 +607,50 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				return
 			}
 			
-			console.log(`🔄 WHATSMEOW MigratePNToLID: ${pnUser} → ${lidUser} (triggered by device ${triggerDevice})`)
+			console.log(`🔄 DEVICE-SPECIFIC MigratePNToLID: ${pnUser}:${triggerDevice} → ${lidUser}:${triggerDevice} (ONLY this device)`)
 			
-			// ATOMIC MIGRATION: All devices in single transaction (whatsmeow pattern)
+			// DEVICE-SPECIFIC MIGRATION: Only migrate the triggering device, not all devices
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				try {
-					// First, store the user-level mapping
+					// Store device-specific LID mapping (1:1 mapping)
 					await lidMapping.storeLIDPNMapping(toJid, fromJid)
-					console.log(`🔗 LID mapping stored: ${pnUser} ↔ ${lidUser}`)
+					console.log(`🔗 Device-specific LID mapping stored: ${fromJid} ↔ ${toJid}`)
 					
-					// Get all sessions to find devices for this user
-					const allSessions = await auth.keys.get('session', [])
-					const sessionPrefix = `${pnUser}.`
+					// Construct proper device-specific JIDs using the standard format
+					const fromDeviceJid = triggerDevice === 0 ? `${pnUser}@s.whatsapp.net` : `${pnUser}:${triggerDevice}@s.whatsapp.net`
+					const toDeviceJid = triggerDevice === 0 ? `${lidUser}@lid` : `${lidUser}:${triggerDevice}@lid`
 					
-					// Find all device sessions for this PN user
-					const devicesToMigrate: number[] = []
-					for (const sessionId of Object.keys(allSessions)) {
-						if (sessionId.startsWith(sessionPrefix) && allSessions[sessionId]) {
-							// Extract device ID from session ID (format: "user.device")
-							const devicePart = sessionId.substring(sessionPrefix.length)
-							const deviceId = parseInt(devicePart) || 0
-							devicesToMigrate.push(deviceId)
-						}
+					const fromAddr = jidToSignalProtocolAddress(fromDeviceJid)
+					const toAddr = jidToSignalProtocolAddress(toDeviceJid)
+					
+					const fromAddrStr = fromAddr.toString()
+					const toAddrStr = toAddr.toString()
+					
+					console.log(`📱 Migrating ONLY device ${triggerDevice}: ${fromAddrStr} → ${toAddrStr}`)
+					
+					// Check if destination already has a session
+					const toSession = await storage.loadSession(toAddrStr)
+					if (toSession && toSession.haveOpenSession()) {
+						console.log(`✅ LID session already exists for device ${triggerDevice}, skipping migration`)
+						return
 					}
 					
-					console.log(`📱 Found ${devicesToMigrate.length} devices to migrate for user ${pnUser}: ${devicesToMigrate.join(', ')}`)
-					
-					// Migrate each device session
-					for (const deviceId of devicesToMigrate) {
-						const fromDeviceJid = deviceId === 0 ? `${pnUser}@s.whatsapp.net` : `${pnUser}:${deviceId}@s.whatsapp.net`
-						const toDeviceJid = deviceId === 0 ? `${lidUser}@lid` : `${lidUser}:${deviceId}@lid`
+					// Load source session
+					const fromSession = await storage.loadSession(fromAddrStr)
+					if (fromSession && fromSession.haveOpenSession()) {
+						console.log(`🔄 Migrating ONLY device ${triggerDevice}: ${fromAddrStr} → ${toAddrStr}`)
 						
-						const fromAddr = jidToSignalProtocolAddress(fromDeviceJid)
-						const toAddr = jidToSignalProtocolAddress(toDeviceJid)
+						// DEVICE-SPECIFIC APPROACH: MOVE session to prevent ratchet conflicts
+						await storage.storeSession(toAddrStr, fromSession)
+						await auth.keys.set({ session: { [fromAddrStr]: null } })
 						
-						const fromAddrStr = fromAddr.toString()
-						const toAddrStr = toAddr.toString()
-						
-						// Check if destination already has a session
-						const toSession = await storage.loadSession(toAddrStr)
-						if (toSession && toSession.haveOpenSession()) {
-							console.log(`✅ LID session already exists for device ${deviceId}, skipping`)
-							continue
-						}
-						
-						// Load source session
-						const fromSession = await storage.loadSession(fromAddrStr)
-						if (fromSession && fromSession.haveOpenSession()) {
-							console.log(`🔄 Migrating device ${deviceId}: ${fromAddrStr} → ${toAddrStr}`)
-							
-							// WHATSMEOW APPROACH: MOVE session to prevent ratchet conflicts
-							await storage.storeSession(toAddrStr, fromSession)
-							await auth.keys.set({ session: { [fromAddrStr]: null } })
-							
-							console.log(`✅ Device ${deviceId} migrated successfully`)
-						} else {
-							console.log(`ℹ️ No session to migrate for device ${deviceId}`)
-						}
+						console.log(`✅ Device ${triggerDevice} migrated successfully (other devices untouched)`)
+					} else {
+						console.log(`ℹ️ No session to migrate for device ${triggerDevice}`)
 					}
 					
 					markAsMigrated(userMigrationKey)
-					console.log(`✅ User migration completed: ${pnUser} → ${lidUser} (${devicesToMigrate.length} devices)`)
+					console.log(`✅ Device-specific migration completed: ${fromJid} → ${toJid} (device ${triggerDevice} only)`)
 					
 				} catch (error) {
 					console.error(`❌ User PN→LID migration failed: ${pnUser} → ${lidUser}`, error)
