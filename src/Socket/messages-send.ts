@@ -366,17 +366,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							device: 0, // Use device 0 for user-level LID mappings
 							wireJid: jidEncode(lidUser!, 'lid', 0) // Wire JID uses LID format
 						})
+						// Skip normal PN processing since we're using LID
+						continue
 					} else {
-						logger.warn({ lidForPN }, '❌ No LID session found for migrated address - will create new LID session')
-						deviceResults.push({ 
-							user: lidUser!, // Use LID user for internal tracking
-							device: 0, // Use device 0 for user-level LID mappings
-							wireJid: jidEncode(lidUser!, 'lid', 0) // Wire JID uses LID format
-						})
+						logger.warn({ lidForPN }, '❌ No LID session found for migrated address - falling back to PN session creation')
+						// CRITICAL FIX: Don't create LID devices without sessions, fall back to PN
+						// This prevents missing sessions when LID mapping exists but LID session doesn't
+						// Continue to normal PN processing instead of using broken LID
+						logger.info({ originalPN: jid }, '🔄 Falling back to PN session creation for contact without LID session')
+						// Don't continue here - fall through to normal PN processing
 					}
-					
-					// Skip normal PN processing since we're using LID
-					continue
 				}
 				} catch (error) {
 					logger.debug({ jid, error }, 'Failed to check LID mapping during PN processing')
@@ -386,6 +385,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 			
 			// Continue with normal PN processing if no LID mapping found
+			logger.debug({ jid, user }, '📞 Processing PN address without LID mapping')
+			
 			if (useCache) {
 				const devices = userDevicesCache.get<JidWithDevice[]>(user!)
 				if (devices) {
@@ -396,29 +397,38 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}))
 					deviceResults.push(...devicesWithWire)
 
-					logger.trace({ user }, 'using cache for devices')
+					logger.debug({ user, deviceCount: devices.length }, '✅ Found cached PN devices')
 				} else {
+					logger.debug({ jid, user }, '🔍 No cached devices, adding to fetch list')
 					toFetch.push(jid)
 				}
 			} else {
+				logger.debug({ jid, user }, '🔍 Cache disabled, adding to fetch list')
 				toFetch.push(jid)
 			}
 		}
 
 		if (!toFetch.length) {
+			logger.debug({ deviceResultsCount: deviceResults.length }, '✅ No JIDs to fetch, returning existing devices')
 			return deviceResults
 		}
 
+		logger.info({ toFetch, fetchCount: toFetch.length }, '🔍 Executing USyncQuery for device enumeration')
+		
 		const query = new USyncQuery().withContext('message').withDeviceProtocol()
 
 		for (const jid of toFetch) {
 			query.withUser(new USyncUser().withId(jid))
+			logger.debug({ jid }, '📋 Added JID to USyncQuery')
 		}
 
 		const result = await sock.executeUSyncQuery(query)
+		logger.debug({ hasResult: !!result, resultList: !!result?.list }, '📊 USyncQuery completed')
 
 		if (result) {
 			const extracted = extractDeviceJids(result?.list, authState.creds.me!.id, ignoreZeroDevices)
+			logger.info({ extractedCount: extracted.length, extracted: extracted.map(e => ({ user: e.user, device: e.device })) }, '📱 Extracted devices from USyncQuery')
+			
 			const deviceMap: { [_: string]: JidWithDevice[] } = {}
 
 			for (const item of extracted) {
@@ -431,11 +441,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					wireJid: jidEncode(item.user, 's.whatsapp.net', item.device)
 				}
 				deviceResults.push(deviceWithWire)
+				logger.debug({ user: item.user, device: item.device, wireJid: deviceWithWire.wireJid }, '✅ Added PN device to results')
 			}
 
+			// Cache the results
 			for (const key in deviceMap) {
 				userDevicesCache.set(key, deviceMap[key]!)
+				logger.debug({ user: key, deviceCount: deviceMap[key]!.length }, '💾 Cached devices for user')
 			}
+		} else {
+			logger.warn({ toFetch }, '❌ USyncQuery returned no results')
 		}
 
 		return deviceResults
@@ -599,9 +614,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							if (hasSession) {
 								logger.info({ jid, lidForPN }, '✅ Found migrated LID session, skipping PN fetch')
 							} else {
-								// CRITICAL FIX: Create LID session instead of PN session when mapping exists
-								logger.info({ jid, lidForPN, lidSignalId }, '🔄 LID mapping found but no LID session - will create LID session')
-								jidToFetch = lidForPN // Use LID JID for session creation
+								// CRITICAL FIX: Don't create LID sessions without existing session, fall back to PN
+								logger.warn({ jid, lidForPN }, '❌ LID mapping exists but no LID session - falling back to PN session creation')
+								// Keep jidToFetch as original PN jid to create PN session instead
+								hasSession = false // Ensure PN session creation continues
 							}
 						} else {
 							logger.debug({ jid }, 'No LID mapping found, will create PN session')
