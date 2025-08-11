@@ -113,31 +113,36 @@ export class LIDMappingStore {
         const lidUser = decoded.user
         const lidDevice = decoded.device
         
-        // If LID has device ID, look for specific reverse mapping
-        if (lidDevice !== undefined) {
-            const reverseKey = `${lidUser}_1_*:${lidDevice}`
-            // This is a simplified implementation - in production you'd scan for keys matching pattern
-            console.log(`🔍 Looking for reverse mapping pattern: ${reverseKey}`)
-            
-            // For now, try to construct the most likely PN from LID
-            // This is a heuristic - ideally we'd store a proper reverse index
-            const possiblePn = `${lidUser}:${lidDevice}@s.whatsapp.net`
-            const possiblePnKey = `${lidUser}:${lidDevice}`
-            
-            const stored = await this.keys.get('lid-mapping', [possiblePnKey])
-            if (stored[possiblePnKey] === lidUser) {
-                console.log(`✅ Found reverse mapping: ${lid} → ${possiblePn}`)
-                return possiblePn
-            }
-        } else {
-            // Base LID without device - look for device 0
-            const possiblePn = `${lidUser}:0@s.whatsapp.net`
-            const possiblePnKey = `${lidUser}:0`
-            
-            const stored = await this.keys.get('lid-mapping', [possiblePnKey])
-            if (stored[possiblePnKey] === lidUser) {
-                console.log(`✅ Found reverse mapping for base LID: ${lid} → ${possiblePn}`)
-                return possiblePn
+        // Try to find ANY reverse mapping for this LID user
+        // We need to search for keys that match pattern: "lidUser_1_*"
+        console.log(`🔍 Looking for reverse mappings for LID user: ${lidUser}`)
+        
+        // Get all lid-mapping keys to find reverse mappings
+        const allMappings = await this.keys.get('lid-mapping', [])
+        
+        // Look for reverse mappings: "lidUser_1_pnDevice" -> "pnDevice"
+        for (const [key, value] of Object.entries(allMappings)) {
+            if (key.startsWith(`${lidUser}_1_`) && typeof value === 'string') {
+                // Found a reverse mapping: extract the PN device
+                const pnDevice = value // This should be like "554396160286:43"
+                
+                // If LID has specific device, match it
+                if (lidDevice !== undefined) {
+                    // Check if this PN device matches the LID device
+                    const pnDecoded = pnDevice.includes(':') ? pnDevice.split(':') : [pnDevice, '0']
+                    const pnDeviceId = pnDecoded[1] || '0'
+                    
+                    if (pnDeviceId === lidDevice.toString()) {
+                        const pnJid = `${pnDevice}@s.whatsapp.net`
+                        console.log(`✅ Found device-specific reverse mapping: ${lid} → ${pnJid}`)
+                        return pnJid
+                    }
+                } else {
+                    // Return first found PN device for base LID
+                    const pnJid = `${pnDevice}@s.whatsapp.net`
+                    console.log(`✅ Found reverse mapping for base LID: ${lid} → ${pnJid}`)
+                    return pnJid
+                }
             }
         }
         

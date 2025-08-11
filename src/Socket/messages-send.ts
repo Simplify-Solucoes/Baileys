@@ -241,7 +241,50 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		jids = Array.from(new Set(jids))
 
 		for (let jid of jids) {
-			const user = jidDecode(jid)?.user
+			const decoded = jidDecode(jid)
+			const user = decoded?.user
+			
+			// CRITICAL FIX: Handle LID addresses differently - don't treat as phone numbers
+			if (jid.includes('@lid')) {
+				logger.debug({ jid }, 'Processing LID address - checking for existing LID sessions')
+				
+				// For LID addresses, check if we have existing LID sessions
+				// Don't try to fetch new devices since this is already a LID
+				const lidSignalId = signalRepository.jidToSignalProtocolAddress(jid)
+				const lidSessions = await authState.keys.get('session', [lidSignalId])
+				const hasLIDSession = !!lidSessions[lidSignalId]
+				
+				if (hasLIDSession) {
+					// We have existing LID session - use it directly
+					logger.info({ jid }, '✅ Found existing LID session')
+					deviceResults.push({ 
+						user: user!, 
+						device: decoded?.device || 0 
+					})
+				} else {
+					// No LID session - try to find original PN devices through reverse mapping
+					logger.debug({ jid }, 'No LID session found, looking for reverse mapping to PN devices')
+					
+					const lidMapping = signalRepository.getLIDMappingStore()
+					const originalPN = await lidMapping.getPNForLID(jid)
+					
+					if (originalPN) {
+						logger.info({ jid, originalPN }, '✅ Found reverse mapping, will use PN for session creation')
+						// Add the original PN to fetch list instead of LID
+						toFetch.push(originalPN)
+					} else {
+						logger.warn({ jid }, '❌ No LID session and no reverse mapping found - will create new LID session')
+						// Create LID device entry for new session creation
+						deviceResults.push({ 
+							user: user!, 
+							device: decoded?.device || 0 
+						})
+					}
+				}
+				continue // Skip normal processing for LID addresses
+			}
+			
+			// Normal PN processing
 			jid = jidNormalizedUser(jid)
 			if (useCache) {
 				const devices = userDevicesCache.get<JidWithDevice[]>(user!)
