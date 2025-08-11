@@ -537,6 +537,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				let hasSession = !!sessions[signalId]
 				
 				// If no PN session found, check if there's a migrated LID session
+				let jidToFetch = jid // Default to original JID
 				if (!hasSession && jid.includes('@s.whatsapp.net')) {
 					try {
 						logger.debug({ jid }, 'Checking for LID mapping before creating PN session')
@@ -552,7 +553,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							if (hasSession) {
 								logger.info({ jid, lidForPN }, '✅ Found migrated LID session, skipping PN fetch')
 							} else {
-								logger.warn({ jid, lidForPN, lidSignalId }, '❌ LID mapping found but no LID session exists')
+								// CRITICAL FIX: Create LID session instead of PN session when mapping exists
+								logger.info({ jid, lidForPN, lidSignalId }, '🔄 LID mapping found but no LID session - will create LID session')
+								jidToFetch = lidForPN // Use LID JID for session creation
 							}
 						} else {
 							logger.debug({ jid }, 'No LID mapping found, will create PN session')
@@ -562,16 +565,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 				
-				// CRITICAL FIX: Only add to fetch list if it's appropriate for the address type
+				// CRITICAL FIX: Use the determined JID (could be LID or PN) for session creation
 				if (!hasSession) {
-					// For LID addresses, create new LID sessions directly
-					// For PN addresses, check they're not duplicate versions of LID users
-					if (jid.includes('@lid')) {
-						logger.debug({ jid }, 'Adding LID address to fetch list for new LID session creation')
-						jidsRequiringFetch.push(jid)
-					} else if (jid.includes('@s.whatsapp.net')) {
-						logger.debug({ jid }, 'Adding PN address to fetch list for new PN session creation')
-						jidsRequiringFetch.push(jid)
+					if (jidToFetch.includes('@lid')) {
+						logger.debug({ originalJid: jid, lidJid: jidToFetch }, 'Adding LID address to fetch list (from mapping)')
+						jidsRequiringFetch.push(jidToFetch)
+					} else if (jidToFetch.includes('@s.whatsapp.net')) {
+						logger.debug({ jid: jidToFetch }, 'Adding PN address to fetch list for new PN session creation')
+						jidsRequiringFetch.push(jidToFetch)
 					}
 				}
 			}
@@ -1025,7 +1026,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							// WHATSMEOW PATTERN: Use ownId (which might be LID) for device resolution
 							// COMPANION DEVICE FIX: Always fetch fresh device list for proper multi-device delivery
 							// This ensures replies reach both primary and companion devices
-							const additionalDevices = await getUSyncDevices([ownId, finalJid], false, true)
+							const additionalDevices = await getUSyncDevices([ownId, finalJid], false, false)
 							devices.push(...additionalDevices)
 						}
 					}
@@ -1126,35 +1127,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					stanza.attrs.to = participant.jid
 				}
 			} else {
-				// WHATSMEOW PATTERN: Set main envelope <to> to primary device for proper delivery routing
-				// This ensures the main device gets proper ACK delivery confirmations
-				if (!isGroup && !isStatus && participants.length > 0) {
-					// Extract device JIDs from participant nodes to find primary device
-					const deviceJids: string[] = []
-					for (const participantNode of participants) {
-						if (participantNode.tag === 'to' && participantNode.attrs?.jid) {
-							deviceJids.push(participantNode.attrs.jid as string)
-						}
-					}
-					
-					// Find the primary device (device 0) for the main recipient
-					const primaryDeviceJid = deviceJids.find((jid: string) => {
-						const decoded = jidDecode(jid)
-						return decoded?.device === 0 || decoded?.device === undefined
-					})
-					
-					if (primaryDeviceJid) {
-						stanza.attrs.to = primaryDeviceJid
-						logger.debug({ originalTo: destinationJid, primaryTo: primaryDeviceJid }, 'Set main envelope to primary device for delivery')
-					} else {
-						// Fallback to first device if no device 0 found
-						stanza.attrs.to = deviceJids[0] || destinationJid
-						logger.debug({ originalTo: destinationJid, fallbackTo: deviceJids[0] }, 'Using first device as main envelope target')
-					}
-				} else {
-					// For groups/status, use the original destination
-					stanza.attrs.to = destinationJid
-				}
+				stanza.attrs.to = destinationJid
 			}
 
 			if (shouldIncludeDeviceIdentity) {
