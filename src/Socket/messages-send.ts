@@ -229,9 +229,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		await sendReceipts(keys, readType)
 	}
 
-	/** Enhanced device info that preserves wire JID format */
+	/** Enhanced device info that preserves wire JID format and session context */
 	type DeviceWithWireJid = JidWithDevice & {
 		wireJid: string // The exact JID format that should be used in wire protocol
+		sessionContext?: {
+			targetSession: string
+			senderIdentity: string  
+			addressingMode: 'lid' | 'pn'
+		}
 	}
 
 	/** Fetch all the devices we've to send a message to */
@@ -1095,32 +1100,57 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 
 						if (additionalAttributes?.['category'] !== 'peer') {
-							// MULTI-SESSION DELIVERY: Enumerate devices for ALL target sessions
-							// Convert device-specific JID to user-level JID to get all sender devices
-							const ownUserJid = jidEncode(jidDecode(ownId)!.user, jidDecode(ownId)!.server, undefined)
-							
-							// Build enumeration list with sender + all target sessions
-							const enumerationTargets = [ownUserJid, ...targetSessions]
-							
-							logger.debug({ 
-								ownId, 
-								ownUserJid, 
-								targetSessions,
-								enumerationTargets 
-							}, 'Multi-session device enumeration for comprehensive delivery')
-							
-							// COMPANION DEVICE FIX: Always fetch fresh device list for proper multi-device delivery
-							// This ensures messages reach all devices across all available sessions
-							const additionalDevices = await getUSyncDevices(enumerationTargets, false, false)
-							
-							logger.debug({ 
-								deviceCount: additionalDevices.length,
-								devices: additionalDevices.map(d => `${d.user}:${d.device}@${jidDecode(d.wireJid)?.server}`),
-								sessionsTargeted: targetSessions.length
-							}, 'Enumerated devices for multi-session delivery')
-							// Replace placeholder entries with actual device enumeration
+							// MULTI-SESSION DELIVERY: Maintain addressing mode consistency per session
+							// For each recipient session type, use matching sender identity
 							devices.length = 0 // Clear placeholders
-							devices.push(...additionalDevices)
+							
+							for (const targetSession of targetSessions) {
+								const targetIsLid = jidDecode(targetSession)?.server === 'lid'
+								
+								// ADDRESSING CONSISTENCY: Match sender identity to recipient session type
+								let senderIdentity: string
+								if (targetIsLid && meLid) {
+									// LID recipient → use LID sender identity
+									senderIdentity = jidEncode(jidDecode(meLid)!.user, 'lid', undefined)
+								} else {
+									// PN recipient → use PN sender identity  
+									senderIdentity = jidEncode(jidDecode(meId)!.user, 's.whatsapp.net', undefined)
+								}
+								
+								logger.debug({ 
+									targetSession,
+									targetIsLid,
+									senderIdentity,
+									reason: 'addressing_consistency'
+								}, 'Session-specific device enumeration for consistent addressing')
+								
+								// Enumerate devices for this specific session pair
+								const sessionDevices = await getUSyncDevices([senderIdentity, targetSession], false, false)
+								
+								// Add devices with session context
+								devices.push(...sessionDevices.map(device => ({
+									...device,
+									sessionContext: {
+										targetSession,
+										senderIdentity,
+										addressingMode: targetIsLid ? 'lid' as const : 'pn' as const
+									}
+								})))
+							}
+							
+							// Remove duplicates while preserving session context
+							const uniqueDevices = devices.filter((device, index, arr) => 
+								arr.findIndex(d => d.wireJid === device.wireJid) === index
+							)
+							devices.length = 0
+							devices.push(...uniqueDevices)
+							
+							logger.debug({ 
+								deviceCount: devices.length,
+								devices: devices.map(d => `${d.user}:${d.device}@${jidDecode(d.wireJid)?.server}`),
+								sessionsTargeted: targetSessions.length,
+								uniqueDevices: uniqueDevices.length
+							}, 'Multi-session enumeration complete with addressing consistency')
 						}
 					}
 				}
