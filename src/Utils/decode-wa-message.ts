@@ -250,9 +250,25 @@ export const decryptMessageNode = (
 									const senderDevice = senderDecoded?.device || 0
 									
 									if (senderAlt && isLidUser(senderAlt)) {
-										// PRIORITY 1: Use LID from message metadata (exact whatsmeow pattern)
-										senderEncryptionJid = senderAlt
-										logger.debug({ sender, senderAlt, device: senderDevice }, 'Using LID from message metadata for decryption')
+										// PRIORITY 1: Use LID from message metadata but get device-specific mapped LID
+										// The metadata LID doesn't include device ID, so we need to get the 1:1 mapped version
+										try {
+											const lidStore = repository.getLIDMappingStore()
+											const deviceSpecificLid = await lidStore.getLIDForPN(sender)
+											
+											if (deviceSpecificLid) {
+												senderEncryptionJid = deviceSpecificLid
+												logger.debug({ sender, senderAlt, deviceSpecificLid, device: senderDevice }, 'Using device-specific LID from mapping instead of raw metadata')
+											} else {
+												// Fallback to metadata LID if no mapping found
+												senderEncryptionJid = senderAlt
+												logger.debug({ sender, senderAlt, device: senderDevice }, 'Using raw LID from metadata (no device-specific mapping found)')
+											}
+										} catch (error) {
+											// Fallback to metadata LID on error
+											senderEncryptionJid = senderAlt
+											logger.warn({ sender, senderAlt, error }, 'Error getting device-specific LID, using raw metadata LID')
+										}
 									} else {
 										// PRIORITY 2: Check for existing LID sessions (whatsmeow LID priority)
 										// 1:1 device mapping - each PN device can have its own LID mapping
