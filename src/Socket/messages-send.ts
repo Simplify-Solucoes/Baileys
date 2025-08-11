@@ -82,7 +82,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		sendNode,
 		groupMetadata,
 		groupToggleEphemeral,
-		receiptTracker
 	} = sock
 
 	// Initialize built-in message cache (replaces external getMessage)
@@ -776,16 +775,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					return {} as BinaryNode
 				}
 
-				// DSM logic: Use DSM for own other devices
+				// DSM logic: Use DSM for own other devices (following whatsmeow implementation)
 				let messageToEncrypt = patchedMessage
 				if (dsmMessage) {
 					const { user: targetUser } = jidDecode(wireJid)!
-					const isOwnDevice = (targetUser === meUser || (meLidUser && targetUser === meLidUser)) &&
-									  wireJid !== meId && wireJid !== authState.creds.me?.lid
+					const { user: ownPnUser } = jidDecode(meId)!
+					const ownLidUser = meLidUser
 					
-					if (isOwnDevice) {
+					// Check if this is our device (same user, different device)
+					const isOwnUser = targetUser === ownPnUser || (ownLidUser && targetUser === ownLidUser)
+					
+					// Exclude exact sender device (whatsmeow: if jid == ownJID || jid == ownLID { continue })
+					const isExactSenderDevice = wireJid === meId || (authState.creds.me?.lid && wireJid === authState.creds.me.lid)
+					
+					if (isOwnUser && !isExactSenderDevice) {
 						messageToEncrypt = dsmMessage
-						console.log(`📱 Using DSM for own device: ${wireJid}`)
+						console.log(`📱 Using DSM for own device: ${wireJid} (user: ${targetUser})`)
 					}
 				}
 
@@ -943,12 +948,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: DeviceWithWireJid[] = []
 
-		const meMsg: proto.IMessage = {
+		// DSM is only created for 1:1 chats (following whatsmeow implementation)
+		const meMsg: proto.IMessage | undefined = (!isGroup && !isStatus) ? {
 			deviceSentMessage: {
 				destinationJid,
 				message
 			}
-		}
+		} : undefined
 
 		const extraAttrs: BinaryNodeAttributes = {}
 
@@ -1220,6 +1226,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const { user: meLidUser } = meLid ? jidDecode(meLid)! : { user: null }
 				
 				for (const { user, wireJid } of devices) {
+					// WHATSMEOW LOGIC: Skip exact sender device to prevent loops
+					const isExactSenderDevice = wireJid === meId || (meLid && wireJid === meLid)
+					if (isExactSenderDevice) {
+						logger.debug({ wireJid, meId, meLid }, '⏭️ Skipping exact sender device (whatsmeow pattern)')
+						continue
+					}
+					
 					// Check if this is our device (could match either PN or LID user)
 					const isMe = user === mePnUser || (meLidUser && user === meLidUser)
 					
@@ -1263,8 +1276,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
-					// For own devices: use meMsg as main message (it's already DSM)
-					createParticipantNodes(meJids, meMsg, extraAttrs),
+					// For own devices: use DSM if available (1:1 chats only)
+					createParticipantNodes(meJids, meMsg || message, extraAttrs),
 					// For other devices: pass DSM so own devices of recipients get DSM
 					createParticipantNodes(otherJids, message, extraAttrs, meMsg)
 				])
@@ -1374,50 +1387,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			await sendNode(stanza)
 
-			// Track receipt timeout for outgoing messages only
-			if (receiptTracker) {
-				const messageKey: WAMessageKey = {
-					remoteJid: jid,
-					fromMe: true,
-					id: msgId
-				}
-
-				// Extract ALL device JIDs for tracking (including our own devices)
-				const allTargetDevices = participants
-					.map(p => p.attrs.jid)
-					.filter((jid): jid is string => jid != null)
-
-				// Filter to get only recipient devices (exclude our own main ID but keep our device variants)
-				const recipientDevices = allTargetDevices.filter(deviceJid => {
-					// Don't track our main JID, but track our device variants
-					const isOurMainId = deviceJid === authState.creds.me?.id
-					return !isOurMainId
-				})
-
-				logger.debug({
-					msgId,
-					totalParticipants: participants.length,
-					allTargetDevices,
-					recipientDevices,
-					ourMainId: ownId  // Use LID-aware identity instead of hardcoded PN
-				}, 'Device extraction for receipt tracking')
-
-				if (recipientDevices.length > 0) {
-					receiptTracker.trackMessageSent(
-						messageKey,
-						jid,
-						recipientDevices  // Always pass device list for both groups and 1-to-1
-					)
-					
-					logger.trace({
-						msgId,
-						targetDevices: recipientDevices.length,
-						allDevices: allTargetDevices.length,
-						recipientDevices: recipientDevices,
-						isGroup
-					}, 'Started receipt timeout tracking for outgoing message')
-				}
-			}
 		})
 
 		return msgId
