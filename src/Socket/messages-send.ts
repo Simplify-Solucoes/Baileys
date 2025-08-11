@@ -1250,7 +1250,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// Only isolate sessions during session management, not message delivery
 				const currentDeviceId = authState.creds.me?.id?.split(':')[1] || '0'
 				const currentDeviceJid = `${mePnUser}:${currentDeviceId}@s.whatsapp.net`
-				const mainDeviceJid = `${mePnUser}@s.whatsapp.net` // Device .0
+				const mainDeviceJid = `${mePnUser}:0@s.whatsapp.net` // Device .0 (main device)
 				
 				// For session management: only check sessions we can safely manage
 				const managedMeJids = meJids.filter(jid => {
