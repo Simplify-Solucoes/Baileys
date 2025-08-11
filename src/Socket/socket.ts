@@ -734,28 +734,31 @@ export const makeSocket = (config: SocketConfig) => {
 
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
 
-		// WHATSMEOW PATTERN: Create own LID session immediately after authentication
-		// This ensures we can send/receive LID messages from the start
-		if (node.attrs.lid && authState.creds.me?.id) {
-			try {
-				const myPN = authState.creds.me.id
-				const myLID = node.attrs.lid
-				
-				logger.info({ myPN, myLID }, '🆔 Creating own LID session after authentication')
-				
-				// Store our own LID-PN mapping
-				await signalRepository.storeLIDPNMapping(myLID, myPN)
-				
-				// Create LID session for ourselves (whatsmeow pattern)
-				await signalRepository.migrateSession(myPN, myLID)
-				
-				logger.info({ myPN, myLID }, '✅ Own LID session created successfully')
-			} catch (error) {
-				logger.error({ error, lid: node.attrs.lid }, '❌ Failed to create own LID session')
-			}
-		}
-
 		ev.emit('connection.update', { connection: 'open' })
+
+		// WHATSMEOW PATTERN: Create own LID session after connection is stable
+		// This ensures we can send/receive LID messages without interfering with auth flow
+		if (node.attrs.lid && authState.creds.me?.id) {
+			const myLID = node.attrs.lid as string // Safe cast since we checked it exists above
+			// Use nextTick to defer LID session creation until after auth completion
+			process.nextTick(async () => {
+				try {
+					const myPN = authState.creds.me!.id
+					
+					logger.info({ myPN, myLID }, '🆔 Creating own LID session after connection established')
+					
+					// Store our own LID-PN mapping
+					await signalRepository.storeLIDPNMapping(myLID, myPN)
+					
+					// Create LID session for ourselves (whatsmeow pattern)
+					await signalRepository.migrateSession(myPN, myLID)
+					
+					logger.info({ myPN, myLID }, '✅ Own LID session created successfully')
+				} catch (error) {
+					logger.error({ error, lid: myLID }, '❌ Failed to create own LID session')
+				}
+			})
+		}
 	})
 
 	ws.on('CB:stream:error', (node: BinaryNode) => {
