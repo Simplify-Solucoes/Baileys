@@ -948,10 +948,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const bytes = encodeWAMessage(patched)
 
+				// WHATSMEOW PATTERN: Use LID identity for group sender key when sending to LID groups
+				const groupSenderIdentity = isLid && meLid ? meLid : meId
+				
 				const { ciphertext, senderKeyDistributionMessage } = await signalRepository.encryptGroupMessage({
 					group: destinationJid,
 					data: bytes,
-					meId
+					meId: groupSenderIdentity
 				})
 
 				const senderKeyJids: string[] = []
