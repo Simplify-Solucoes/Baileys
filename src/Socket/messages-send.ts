@@ -1126,7 +1126,35 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					stanza.attrs.to = participant.jid
 				}
 			} else {
-				stanza.attrs.to = destinationJid
+				// WHATSMEOW PATTERN: Set main envelope <to> to primary device for proper delivery routing
+				// This ensures the main device gets proper ACK delivery confirmations
+				if (!isGroup && !isStatus && participants.length > 0) {
+					// Extract device JIDs from participant nodes to find primary device
+					const deviceJids: string[] = []
+					for (const participantNode of participants) {
+						if (participantNode.tag === 'to' && participantNode.attrs?.jid) {
+							deviceJids.push(participantNode.attrs.jid as string)
+						}
+					}
+					
+					// Find the primary device (device 0) for the main recipient
+					const primaryDeviceJid = deviceJids.find((jid: string) => {
+						const decoded = jidDecode(jid)
+						return decoded?.device === 0 || decoded?.device === undefined
+					})
+					
+					if (primaryDeviceJid) {
+						stanza.attrs.to = primaryDeviceJid
+						logger.debug({ originalTo: destinationJid, primaryTo: primaryDeviceJid }, 'Set main envelope to primary device for delivery')
+					} else {
+						// Fallback to first device if no device 0 found
+						stanza.attrs.to = deviceJids[0] || destinationJid
+						logger.debug({ originalTo: destinationJid, fallbackTo: deviceJids[0] }, 'Using first device as main envelope target')
+					}
+				} else {
+					// For groups/status, use the original destination
+					stanza.attrs.to = destinationJid
+				}
 			}
 
 			if (shouldIncludeDeviceIdentity) {
@@ -1202,7 +1230,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					totalParticipants: participants.length,
 					allTargetDevices,
 					recipientDevices,
-					ourMainId: authState.creds.me?.id
+					ourMainId: ownId  // Use LID-aware identity instead of hardcoded PN
 				}, 'Device extraction for receipt tracking')
 
 				if (recipientDevices.length > 0) {
