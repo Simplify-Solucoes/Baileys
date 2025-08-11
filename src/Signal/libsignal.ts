@@ -576,8 +576,8 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		},
 
 		/**
-		 * WHATSMEOW EXACT: MigratePNToLID - Migrate ALL devices in single transaction
-		 * ALIGNMENT: Following whatsmeow's approach of user-level migration
+		 * WHATSMEOW EXACT: MigratePNToLID - Copy sessions to LID while preserving PN sessions
+		 * ALIGNMENT: Following whatsmeow's approach of user-level migration with dual session availability
 		 */
 		async migrateSession(fromJid: string, toJid: string) {
 			// WHATSMEOW RULE: Only migrate PN → LID, never the reverse
@@ -665,10 +665,10 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 							await storage.storeSession(toAddrStr, copiedSession)
 							console.log(`💾 Session data deep-copied and migrated for device ${deviceId}`)
 							
-							// Delete the original PN session to complete the move
-							await auth.keys.set({ session: { [fromAddrStr]: null } })
-							
-							console.log(`✅ Device ${deviceId} migrated successfully`)
+							// CRITICAL FIX: Preserve PN session instead of deleting it
+							// This maintains dual session availability like contacts do
+							// DO NOT DELETE: await auth.keys.set({ session: { [fromAddrStr]: null } })
+							console.log(`✅ Device ${deviceId} migrated successfully (PN session preserved)`)
 						} else {
 							console.log(`ℹ️ No session to migrate for device ${deviceId}`)
 						}
