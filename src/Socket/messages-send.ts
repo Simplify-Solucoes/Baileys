@@ -1068,7 +1068,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
 			} else {
 				// WHATSMEOW PATTERN: Extract user from ownId (which might be LID)
-				const { user: meUser } = jidDecode(ownId)!
+				const { user: ownUser } = jidDecode(ownId)!
 
 				if (!participant) {
 					// If targetDevices is specified (for receipt timeout resends), use only those
@@ -1096,11 +1096,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							device: 0,
 							wireJid: jidEncode(user, user.includes('_') ? 'lid' : 's.whatsapp.net', 0)
 						})
-						if (user !== meUser) {
+						if (user !== ownUser) {
 							devices.push({ 
-								user: meUser, 
+								user: ownUser, 
 								device: 0,
-								wireJid: jidEncode(meUser, 's.whatsapp.net', 0)
+								wireJid: jidEncode(ownUser, 's.whatsapp.net', 0)
 							})
 						}
 
@@ -1170,7 +1170,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				
 				for (const { user, wireJid } of devices) {
 					// Check if this is our device (could match either PN or LID user)
-					const isMe = user === meUser || user === mePnUser || (meLidUser && user === meLidUser)
+					const isMe = user === mePnUser || (meLidUser && user === meLidUser)
+					
+					// DEBUG: Log device classification
+					logger.debug({ 
+						deviceUser: user, 
+						wireJid, 
+						mePnUser, 
+						meLidUser, 
+						isMe,
+						classification: isMe ? 'OWN_DEVICE' : 'OTHER_DEVICE'
+					}, '🔍 Device classification for DSM logic')
 					
 					// WHATSMEOW EXACT: Use the wire JID exactly as returned from device enumeration
 					// This preserves the correct server format based on what was originally queried
@@ -1186,6 +1196,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 
 				await assertSessions(allJids, false)
+
+				logger.debug({ 
+					meJids, 
+					otherJids, 
+					totalDevices: allJids.length,
+					ownDeviceCount: meJids.length,
+					otherDeviceCount: otherJids.length
+				}, '📤 DSM device allocation for message sending')
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
