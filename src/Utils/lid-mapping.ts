@@ -40,15 +40,15 @@ export class LIDMappingStore {
         
         if (!lidDecoded || !pnDecoded) return
         
-        // CRITICAL FIX: 1:1 device mapping - each PN device maps to corresponding LID device
-        // This prevents double ratchet corruption by maintaining separate sessions per device
+        // CRITICAL FIX: 1:1 device mapping - push PN device ID to LID
+        // LID addresses from metadata don't include device IDs, so we use the PN device ID
         const pnDevice = pnDecoded.device !== undefined ? pnDecoded.device : 0
-        const lidDevice = lidDecoded.device !== undefined ? lidDecoded.device : 0
+        const lidDevice = lidDecoded.device !== undefined ? lidDecoded.device : pnDevice  // Use PN device if LID has no device
         
         const pnWithDevice = `${pnDecoded.user}:${pnDevice}`
         const lidWithDevice = `${lidDecoded.user}:${lidDevice}`
         
-        console.log(`📱 Storing 1:1 DEVICE LID mapping: PN device ${pnWithDevice} → LID device ${lidWithDevice}`)
+        console.log(`📱 Storing 1:1 DEVICE LID mapping: PN device ${pnWithDevice} → LID device ${lidWithDevice} (device ID ${pnDevice} pushed from PN to LID)`)
         
         // Redis-optimized: Direct storage, no redundant cache
         await this.keys.transaction(async () => {
@@ -64,7 +64,7 @@ export class LIDMappingStore {
         // Update sync cache after successful storage (1:1 device mapping)
         this.updateSyncCache(pnWithDevice, lidWithDevice)
         
-        console.log(`✅ 1:1 DEVICE LID mapping stored: PN device ${pnWithDevice} → LID device ${lidWithDevice}`)
+        console.log(`✅ 1:1 DEVICE LID mapping stored: PN device ${pnWithDevice} → LID device ${lidWithDevice} (PN device ID pushed to LID)`)
     }
 
     /**
