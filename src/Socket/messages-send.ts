@@ -755,7 +755,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const createParticipantNodes = async (
 		jids: string[], 
 		message: proto.IMessage, 
-		extraAttrs?: BinaryNode['attrs']
+		extraAttrs?: BinaryNode['attrs'],
+		// DSM support for own devices
+		dsmMessage?: proto.IMessage
 	) => {
 		let patched = await patchMessageBeforeSending(message, jids)
 		if (!Array.isArray(patched)) {
@@ -764,6 +766,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		let shouldIncludeDeviceIdentity = false
 		const meId = authState.creds.me!.id
+		const { user: meUser } = jidDecode(meId)!
+		const meLidUser = authState.creds.me?.lid ? jidDecode(authState.creds.me.lid)?.user : null
 
 		const nodes = await Promise.all(
 			patched.map(async patchedMessageWithJid => {
@@ -772,8 +776,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					return {} as BinaryNode
 				}
 
-				// NO DSM: Just use the regular message for all devices
-				const bytes = encodeWAMessage(patchedMessage)
+				// DSM logic: Use DSM for own other devices
+				let messageToEncrypt = patchedMessage
+				if (dsmMessage) {
+					const { user: targetUser } = jidDecode(wireJid)!
+					const isOwnDevice = (targetUser === meUser || (meLidUser && targetUser === meLidUser)) &&
+									  wireJid !== meId && wireJid !== authState.creds.me?.lid
+					
+					if (isOwnDevice) {
+						messageToEncrypt = dsmMessage
+						console.log(`📱 Using DSM for own device: ${wireJid}`)
+					}
+				}
+
+				const bytes = encodeWAMessage(messageToEncrypt)
 				
 				// WIRE JID: Determine encryption identity (following whatsmeow's approach)
 				let encryptionJid = wireJid
@@ -927,6 +943,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: DeviceWithWireJid[] = []
 
+		const meMsg: proto.IMessage = {
+			deviceSentMessage: {
+				destinationJid,
+				message
+			}
+		}
 
 		const extraAttrs: BinaryNodeAttributes = {}
 
@@ -1190,20 +1212,66 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
-				// SIMPLIFIED: No DSM logic, just send to all devices
-				const allJids = devices.map(d => d.wireJid)
+				const allJids: string[] = []
+				const meJids: string[] = []
+				const otherJids: string[] = []
+				// WHATSMEOW PATTERN: Also need to check against both PN and LID users
+				const { user: mePnUser } = jidDecode(meId)!
+				const { user: meLidUser } = meLid ? jidDecode(meLid)! : { user: null }
 				
-				await assertSessions(allJids, false)
+				for (const { user, wireJid } of devices) {
+					// Check if this is our device (could match either PN or LID user)
+					const isMe = user === mePnUser || (meLidUser && user === meLidUser)
+					
+					// DEBUG: Log device classification
+					logger.debug({ 
+						deviceUser: user, 
+						wireJid, 
+						mePnUser, 
+						meLidUser, 
+						isMe,
+						classification: isMe ? 'OWN_DEVICE' : 'OTHER_DEVICE'
+					}, '🔍 Device classification for DSM logic')
+					
+					// WHATSMEOW EXACT: Use the wire JID exactly as returned from device enumeration
+					// This preserves the correct server format based on what was originally queried
+					const jid = wireJid
+					
+					if (isMe) {
+						meJids.push(jid)
+					} else {
+						otherJids.push(jid)
+					}
+
+					allJids.push(jid)
+				}
+
+				// SIMPLIFIED DSM: Keep DSM for multi-device sync but remove complex session management
+				// Just deliver to all devices - let assertSessions handle session management
+
+				await assertSessions([...otherJids, ...meJids], false)
 
 				logger.debug({ 
-					allDevices: allJids,
-					totalDevices: allJids.length
-				}, '📤 Simple device allocation for message sending (no DSM)')
+					ownDevices: meJids,
+					otherDevices: otherJids,
+					totalDevices: [...otherJids, ...meJids].length,
+					ownDeviceCount: meJids.length,
+					otherDeviceCount: otherJids.length
+				}, '📤 DSM device allocation for message sending (simplified)')
 
-				const { nodes, shouldIncludeDeviceIdentity: s1 } = await createParticipantNodes(allJids, message, extraAttrs)
-				participants.push(...nodes)
+				const [
+					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
+					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
+				] = await Promise.all([
+					// For own devices: use meMsg as main message (it's already DSM)
+					createParticipantNodes(meJids, meMsg, extraAttrs),
+					// For other devices: pass DSM so own devices of recipients get DSM
+					createParticipantNodes(otherJids, message, extraAttrs, meMsg)
+				])
+				participants.push(...meNodes)
+				participants.push(...otherNodes)
 
-				shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || s1
+				shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || s1 || s2
 			}
 
 			if (participants.length) {
