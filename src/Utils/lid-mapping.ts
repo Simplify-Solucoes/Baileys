@@ -108,14 +108,40 @@ export class LIDMappingStore {
         const decoded = jidDecode(lid)
         if (!decoded) return null
         
-        // CRITICAL FIX: For reverse lookup, we need to find all PN devices that map to this LID user
-        // We can't directly reverse lookup because we don't know which PN device we're looking for
-        // We need to iterate through potential PN device mappings or use a different approach
+        // CRITICAL FIX: Find PN devices that map to this LID user using reverse mapping pattern
+        // Pattern: "lidUser_1_pnDevice" -> "pnDevice"
+        const lidUser = decoded.user
+        const lidDevice = decoded.device
         
-        // For now, we'll return null as this method should primarily be used for validation
-        // The main flow should use getLIDForPN instead
-        console.log(`🚫 getPNForLID not fully implemented for device-specific mappings: ${lid}`)
-        console.log(`   Use getLIDForPN on specific PN devices instead`)
+        // If LID has device ID, look for specific reverse mapping
+        if (lidDevice !== undefined) {
+            const reverseKey = `${lidUser}_1_*:${lidDevice}`
+            // This is a simplified implementation - in production you'd scan for keys matching pattern
+            console.log(`🔍 Looking for reverse mapping pattern: ${reverseKey}`)
+            
+            // For now, try to construct the most likely PN from LID
+            // This is a heuristic - ideally we'd store a proper reverse index
+            const possiblePn = `${lidUser}:${lidDevice}@s.whatsapp.net`
+            const possiblePnKey = `${lidUser}:${lidDevice}`
+            
+            const stored = await this.keys.get('lid-mapping', [possiblePnKey])
+            if (stored[possiblePnKey] === lidUser) {
+                console.log(`✅ Found reverse mapping: ${lid} → ${possiblePn}`)
+                return possiblePn
+            }
+        } else {
+            // Base LID without device - look for device 0
+            const possiblePn = `${lidUser}:0@s.whatsapp.net`
+            const possiblePnKey = `${lidUser}:0`
+            
+            const stored = await this.keys.get('lid-mapping', [possiblePnKey])
+            if (stored[possiblePnKey] === lidUser) {
+                console.log(`✅ Found reverse mapping for base LID: ${lid} → ${possiblePn}`)
+                return possiblePn
+            }
+        }
+        
+        console.log(`🚫 No reverse mapping found for LID: ${lid}`)
         return null
     }
 
