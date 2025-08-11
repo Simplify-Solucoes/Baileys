@@ -1076,10 +1076,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 
 						if (additionalAttributes?.['category'] !== 'peer') {
-							// WHATSMEOW PATTERN: Use ownId (which might be LID) for device resolution
+							// WHATSMEOW PATTERN: Use user-level JID for device enumeration (like ownID.ToNonAD())
+							// Convert device-specific JID to user-level JID to get all sender devices
+							const ownUserJid = jidEncode(jidDecode(ownId)!.user, jidDecode(ownId)!.server, undefined)
+							
+							logger.debug({ ownId, ownUserJid, finalJid }, 'Device enumeration: converting device-specific to user-level JID')
+							
 							// COMPANION DEVICE FIX: Always fetch fresh device list for proper multi-device delivery
 							// This ensures replies reach both primary and companion devices
-							const additionalDevices = await getUSyncDevices([ownId, finalJid], false, false)
+							const additionalDevices = await getUSyncDevices([ownUserJid, finalJid], false, false)
+							
+							logger.debug({ 
+								deviceCount: additionalDevices.length,
+								devices: additionalDevices.map(d => `${d.user}:${d.device}@${jidDecode(d.wireJid)?.server}`)
+							}, 'Enumerated devices for message sending')
 							// Replace placeholder entries with actual device enumeration
 							devices.length = 0 // Clear placeholders
 							devices.push(...additionalDevices)
