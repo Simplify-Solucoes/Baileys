@@ -237,6 +237,20 @@ export const decryptMessageNode = (
 									try {
 										await repository.storeLIDPNMapping(senderAlt, sender)
 										logger.debug({ sender, senderAlt, device: senderDevice }, 'Stored 1:1 LID mapping from device metadata')
+										
+										// CRITICAL FIX: Migrate session immediately after storing mapping
+										// This ensures the LID session exists for decryption
+										const lidStore = repository.getLIDMappingStore()
+										const deviceSpecificLid = await lidStore.getLIDForPN(sender)
+										
+										if (deviceSpecificLid) {
+											const { exists: hasLIDSession } = await repository.validateSession(deviceSpecificLid)
+											if (!hasLIDSession) {
+												logger.info({ sender, deviceSpecificLid, device: senderDevice }, '🔄 Migrating PN session to LID after mapping creation')
+												await repository.migrateSession(sender, deviceSpecificLid)
+												logger.info({ sender, deviceSpecificLid, device: senderDevice }, '✅ Session migrated to device-specific LID')
+											}
+										}
 									} catch (error) {
 										logger.error({ sender, senderAlt, error }, 'Failed to store LID mapping from metadata')
 									}
