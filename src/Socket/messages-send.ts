@@ -780,8 +780,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isNewsletter = server === 'newsletter'
 		
 		// The jid passed here should already be the correct one (LID if migrated)
-		// from sendMessage, so we don't need to check again
+		// from sendMessage, so update our variables accordingly
 		let finalJid = jid
+		
+		// Update user and isLid based on the actual JID we're using
+		const decodedFinal = jidDecode(finalJid)!
+		user = decodedFinal.user
+		server = decodedFinal.server
+		isLid = server === 'lid'
 
 		// WHATSMEOW PATTERN: Use LID identity when sending to HiddenUserServer (lid)
 		let ownId = meId
@@ -1799,7 +1805,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 				
 				// Cache message using simplified whatsmeow approach with wire-encryption separation
-				const wireJid = fullMsg.key.remoteJid!
+				// CRITICAL: Use original JID as wire JID, not the migrated LID
+				const wireJid = jid  // Original JID passed by user
 				const msgId = fullMsg.key.id!
 				const message = fullMsg.message!
 				
