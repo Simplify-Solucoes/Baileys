@@ -296,24 +296,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						device: decoded?.device || 0 
 					})
 				} else {
-					// No LID session - try to find original PN devices through reverse mapping
-					logger.debug({ jid }, 'No LID session found, looking for reverse mapping to PN devices')
-					
-					const lidMapping = signalRepository.getLIDMappingStore()
-					const originalPN = await lidMapping.getPNForLID(jid)
-					
-					if (originalPN) {
-						logger.info({ jid, originalPN }, '✅ Found reverse mapping, will use PN for session creation')
-						// Add the original PN to fetch list instead of LID
-						toFetch.push(originalPN)
-					} else {
-						logger.warn({ jid }, '❌ No LID session and no reverse mapping found - will create new LID session')
-						// Create LID device entry for new session creation
-						deviceResults.push({ 
-							user: user!, 
-							device: decoded?.device || 0 
-						})
-					}
+					// No LID session found - create new LID session directly
+					// CRITICAL FIX: Don't fallback to PN sessions when sending to LID addresses
+					// If user is sending to a LID, they want LID messaging, not PN fallback
+					logger.warn({ jid }, '❌ No LID session found - will create new LID session')
+					// Create LID device entry for new session creation
+					deviceResults.push({ 
+						user: user!, 
+						device: decoded?.device || 0 
+					})
 				}
 				continue // Skip normal processing for LID addresses
 			}
@@ -401,6 +392,36 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		let didFetchNewSession = false
 		let jidsRequiringFetch: string[] = []
 		
+		// CRITICAL FIX: Apply same LID/PN deduplication as in getUSyncDevices
+		// Remove PN duplicates when LID versions exist
+		const lidUsers = new Set<string>()
+		const filteredJids: string[] = []
+		
+		// First pass: collect all LID users
+		for (const jid of jids) {
+			if (jid.includes('@lid')) {
+				const user = jidDecode(jid)?.user
+				if (user) {
+					lidUsers.add(user)
+				}
+			}
+		}
+		
+		// Second pass: filter out PN versions if LID exists
+		for (const jid of jids) {
+			if (jid.includes('@s.whatsapp.net')) {
+				const user = jidDecode(jid)?.user
+				if (user && lidUsers.has(user)) {
+					logger.debug({ jid, lidUser: user }, '🚫 assertSessions: Skipping PN version - LID version exists')
+					continue // Skip PN version when LID exists
+				}
+			}
+			filteredJids.push(jid)
+		}
+		
+		jids = filteredJids
+		logger.debug({ originalJids: jids.length, filteredJids: jids.length, jids }, '✅ assertSessions: Filtered JIDs to remove PN/LID duplicates')
+		
 		if (force) {
 			// WHATSMEOW PATTERN: Enhanced force logic for session recreation
 			if (retryContext) {
@@ -451,25 +472,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							}
 						}
 						
-						// CRITICAL FIX: Check for PN session if LID session missing 
+						// CRITICAL FIX: Handle LID addresses properly - don't fallback to PN fetching
 						if (!hasSession && jid.includes('@lid')) {
-							try {
-								const pnForLID = await lidMapping.getPNForLID(jid)
-								if (pnForLID && pnForLID.includes('@s.whatsapp.net')) {
-									const pnSignalId = signalRepository.jidToSignalProtocolAddress(pnForLID)
-									const pnSessions = await authState.keys.get('session', [pnSignalId])
-									hasSession = !!pnSessions[pnSignalId]
-									
-									if (hasSession) {
-										logger.debug({ jid, pnForLID }, 'Found PN session for LID during retry, skipping LID fetch')
-									}
-								}
-							} catch (err: any) {
-								logger.warn({ jid, err: err.message }, 'Failed to check PN mapping during session assertion')
-							}
-						}
-						
-						if (!hasSession) {
+							// For LID addresses, we should create new LID sessions, not fallback to PN
+							logger.debug({ jid }, 'No LID session found, will create new LID session')
+							jidsRequiringFetch.push(jid)
+						} else if (!hasSession && !jid.includes('@lid')) {
+							// Only add PN addresses to fetch list
 							jidsRequiringFetch.push(jid)
 						}
 					}
@@ -514,14 +523,44 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 				
+				// CRITICAL FIX: Only add to fetch list if it's appropriate for the address type
 				if (!hasSession) {
-					jidsRequiringFetch.push(jid)
+					// For LID addresses, create new LID sessions directly
+					// For PN addresses, check they're not duplicate versions of LID users
+					if (jid.includes('@lid')) {
+						logger.debug({ jid }, 'Adding LID address to fetch list for new LID session creation')
+						jidsRequiringFetch.push(jid)
+					} else if (jid.includes('@s.whatsapp.net')) {
+						logger.debug({ jid }, 'Adding PN address to fetch list for new PN session creation')
+						jidsRequiringFetch.push(jid)
+					}
 				}
 			}
 		}
 
 		if (jidsRequiringFetch.length) {
 			logger.debug({ jidsRequiringFetch }, 'fetching sessions')
+			
+			// DEBUG: Check if there are PN versions of LID users being fetched
+			const lidUsersBeingFetched = new Set<string>()
+			const pnUsersBeingFetched = new Set<string>()
+			
+			for (const jid of jidsRequiringFetch) {
+				const user = jidDecode(jid)?.user
+				if (user) {
+					if (jid.includes('@lid')) {
+						lidUsersBeingFetched.add(user)
+					} else if (jid.includes('@s.whatsapp.net')) {
+						pnUsersBeingFetched.add(user)
+					}
+				}
+			}
+			
+			// Find overlaps
+			const overlapping = Array.from(pnUsersBeingFetched).filter(user => lidUsersBeingFetched.has(user))
+			if (overlapping.length > 0) {
+				logger.warn({ overlapping, lidUsersBeingFetched: Array.from(lidUsersBeingFetched), pnUsersBeingFetched: Array.from(pnUsersBeingFetched) }, '🚨 PROBLEM: Fetching both LID and PN sessions for same users')
+			}
 			const result = await query({
 				tag: 'iq',
 				attrs: {
