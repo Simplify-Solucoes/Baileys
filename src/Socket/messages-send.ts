@@ -1246,65 +1246,25 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					allJids.push(jid)
 				}
 
-				// SMART SESSION MANAGEMENT: Prevent corruption but maintain delivery
-				// Only isolate sessions during session management, not message delivery
-				const currentDeviceId = authState.creds.me?.id?.split(':')[1]?.split('@')[0] || '0'
-				const currentDeviceJid = `${mePnUser}:${currentDeviceId}@s.whatsapp.net`
-				const mainDeviceJid = `${mePnUser}:0@s.whatsapp.net` // Device .0 (main device)
-				
-				// For session management: only check sessions we can safely manage
-				const managedMeJids = meJids.filter(jid => {
-					// Always manage LID sessions (they don't interfere)
-					if (jid.includes('@lid')) return true
-					
-					// For PN sessions: manage current device + main device (.0)
-					if (jid.includes('@s.whatsapp.net')) {
-						// Main device can be represented as either user@s.whatsapp.net or user:0@s.whatsapp.net
-						const isMainDevice = jid === `${mePnUser}@s.whatsapp.net` || jid === mainDeviceJid
-						const isCurrentDevice = jid === currentDeviceJid
-						return isCurrentDevice || isMainDevice
-					}
-					
-					return true
-				})
-				
-				// For message delivery: use ALL devices but with safety checks
-				const deliveryMeJids = meJids // Keep all devices for delivery
-				
-				// Log session management strategy
-				const skippedSessionDevices = meJids.filter(jid => !managedMeJids.includes(jid))
-				logger.info({
-					totalOwnDevices: meJids.length,
-					managedSessions: managedMeJids,
-					deliveryTargets: deliveryMeJids,
-					skippedSessionManagement: skippedSessionDevices,
-					currentDevice: currentDeviceJid,
-					mainDevice: mainDeviceJid,
-					strategy: 'smart_session_management'
-				}, '🧠 Smart session management: Current device + main device (.0) managed, all devices targeted for delivery')
-				
-				// Session management is now handled by smart filtering above
-				// assertSessions will handle any missing sessions automatically
+				// SIMPLIFIED DSM: Keep DSM for multi-device sync but remove complex session management
+				// Just deliver to all devices - let assertSessions handle session management
 
-				await assertSessions([...otherJids, ...deliveryMeJids], false)
+				await assertSessions([...otherJids, ...meJids], false)
 
 				logger.debug({ 
-					originalMeJids: meJids,
-					managedMeJids, 
-					deliveryMeJids,
-					otherJids, 
-					totalDevices: [...otherJids, ...deliveryMeJids].length,
-					ownDeviceCount: deliveryMeJids.length,
-					otherDeviceCount: otherJids.length,
-					smartSessionManagement: skippedSessionDevices.length > 0
-				}, '📤 DSM device allocation for message sending (with smart session management)')
+					ownDevices: meJids,
+					otherDevices: otherJids,
+					totalDevices: [...otherJids, ...meJids].length,
+					ownDeviceCount: meJids.length,
+					otherDeviceCount: otherJids.length
+				}, '📤 DSM device allocation for message sending (simplified)')
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
-					// For own devices: use meMsg as main message (it's already DSM) - deliver to all
-					createParticipantNodes(deliveryMeJids, meMsg, extraAttrs),
+					// For own devices: use meMsg as main message (it's already DSM)
+					createParticipantNodes(meJids, meMsg, extraAttrs),
 					// For other devices: pass DSM so own devices of recipients get DSM
 					createParticipantNodes(otherJids, message, extraAttrs, meMsg)
 				])
