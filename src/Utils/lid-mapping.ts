@@ -41,8 +41,8 @@ export class LIDMappingStore {
         if (!lidDecoded || !pnDecoded) return
         
         // CRITICAL FIX: Handle that multiple PN devices can map to the same LID user
-        // PN devices have device IDs, LID users typically don't
-        const pnWithDevice = pnDecoded.device !== undefined ? `${pnDecoded.user}:${pnDecoded.device}` : pnDecoded.user
+        // PN devices have device IDs, LID users typically don't, but we need :0 for main devices
+        const pnWithDevice = pnDecoded.device !== undefined ? `${pnDecoded.user}:${pnDecoded.device}` : `${pnDecoded.user}:0`
         const lidUser = lidDecoded.user  // LID user without device suffix (multiple PN devices → same LID user)
         
         console.log(`📱 Storing DEVICE-SPECIFIC LID mapping: PN device ${pnWithDevice} → LID user ${lidUser}`)
@@ -75,7 +75,8 @@ export class LIDMappingStore {
         if (!decoded) return null
         
         // CRITICAL FIX: Look up by PN device key (each PN device has separate mapping to same LID user)
-        const pnDeviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
+        // Add :0 for main devices to match storage format
+        const pnDeviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : `${decoded.user}:0`
         const stored = await this.keys.get('lid-mapping', [pnDeviceKey])
         let lidUser = stored[pnDeviceKey]
         
@@ -132,8 +133,6 @@ export class LIDMappingStore {
         // Since we can't easily reverse lookup, we'll need to scan for any reverse mapping containing this LID user
         // This is a simplified check - in a real implementation you'd want to maintain a proper reverse index
         
-        const lidUser = decoded.user
-        
         // For now, return false as this method is primarily for validation
         // The main logic should rely on getLIDForPN for specific device lookups
         console.log(`🚫 isLIDMapped simplified for device-specific: ${lid} → assuming not mapped`)
@@ -175,8 +174,8 @@ export class LIDMappingStore {
         const decoded = jidDecode(pn)
         if (!decoded) return null
         
-        // DEVICE-SPECIFIC: Use device-specific key for cache lookup
-        const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
+        // DEVICE-SPECIFIC: Use device-specific key for cache lookup (with :0 for main devices)
+        const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : `${decoded.user}:0`
         const lidWithDevice = this.syncCache.get(deviceKey)
         if (!lidWithDevice) return null
         
