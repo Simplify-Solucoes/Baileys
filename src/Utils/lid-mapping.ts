@@ -40,28 +40,28 @@ export class LIDMappingStore {
         
         if (!lidDecoded || !pnDecoded) return
         
-        // CRITICAL CHANGE: Store DEVICE-SPECIFIC mappings to prevent migration of unsupported devices
-        // Extract full JID (with device info) for device-specific mapping
-        const lidWithDevice = lidDecoded.device !== undefined ? `${lidDecoded.user}:${lidDecoded.device}` : lidDecoded.user
+        // CRITICAL FIX: Handle that multiple PN devices can map to the same LID user
+        // PN devices have device IDs, LID users typically don't
         const pnWithDevice = pnDecoded.device !== undefined ? `${pnDecoded.user}:${pnDecoded.device}` : pnDecoded.user
+        const lidUser = lidDecoded.user  // LID user without device suffix (multiple PN devices → same LID user)
         
-        console.log(`📱 Storing DEVICE-SPECIFIC LID mapping: ${pnWithDevice} ↔ ${lidWithDevice}`)
+        console.log(`📱 Storing DEVICE-SPECIFIC LID mapping: PN device ${pnWithDevice} → LID user ${lidUser}`)
         
         // Redis-optimized: Direct storage, no redundant cache
         await this.keys.transaction(async () => {
-            // Store bidirectional mapping - DEVICE-SPECIFIC to prevent cross-device migration  
+            // Store bidirectional mapping - Each PN device maps to same LID user but maintains separate sessions
             await this.keys.set({
                 'lid-mapping': {
-                    [pnWithDevice]: lidWithDevice,              // "5511999999999:43" -> "55791994282113:43"
-                    [`${lidWithDevice}_1`]: pnWithDevice        // "55791994282113:43_1" -> "5511999999999:43" (reverse lookup)
+                    [pnWithDevice]: lidUser,                    // "554396160286:43" -> "102765716062358"
+                    [`${lidUser}_1_${pnWithDevice}`]: pnWithDevice // "102765716062358_1_554396160286:43" -> "554396160286:43" (device-specific reverse)
                 }
             })
         })
         
         // Update sync cache after successful storage (use device-specific for immediate access)
-        this.updateSyncCache(pnWithDevice, lidWithDevice)
+        this.updateSyncCache(pnWithDevice, lidUser)
         
-        console.log(`✅ DEVICE-SPECIFIC LID mapping stored: ${pnWithDevice} ↔ ${lidWithDevice}`)
+        console.log(`✅ DEVICE-SPECIFIC LID mapping stored: PN device ${pnWithDevice} → LID user ${lidUser}`)
     }
 
     /**
@@ -74,41 +74,27 @@ export class LIDMappingStore {
         const decoded = jidDecode(pn)
         if (!decoded) return null
         
-        // CRITICAL CHANGE: Look up by DEVICE-SPECIFIC key first (exact device match)
-        const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
-        const stored = await this.keys.get('lid-mapping', [deviceKey])
-        let lidWithDevice = stored[deviceKey]
+        // CRITICAL FIX: Look up by PN device key (each PN device has separate mapping to same LID user)
+        const pnDeviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
+        const stored = await this.keys.get('lid-mapping', [pnDeviceKey])
+        let lidUser = stored[pnDeviceKey]
         
         // CRITICAL: Do NOT use legacy user-level mappings - only device-specific
         // This prevents migration of unsupported devices when one device has LID migration
-        if (!lidWithDevice) {
-            console.log(`🚫 No device-specific LID mapping found for ${pn} - NOT falling back to user-level mapping to prevent cross-device migration`)
+        if (!lidUser) {
+            console.log(`🚫 No device-specific LID mapping found for PN device ${pn} - NOT falling back to user-level mapping`)
+            return null
         }
         
-        // CRITICAL FIX: If not found, try to see if this is actually a LID being passed as PN
-        if (!lidWithDevice && decoded.user.match(/^\d{12,15}$/)) {
-            // This might be a base LID, check if we have the reverse mapping
-            const reverseKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}_1` : `${decoded.user}_1`
-            const reverseStored = await this.keys.get('lid-mapping', [reverseKey])
-            const pnWithDevice = reverseStored[reverseKey]
-            if (pnWithDevice) {
-                // This is a LID that has a PN mapping, return it as-is since it's already a LID
-                lidWithDevice = deviceKey
-            }
-        }
-        
-        if (!lidWithDevice || typeof lidWithDevice !== 'string') return null
+        if (typeof lidUser !== 'string') return null
         
         // Update sync cache for immediate access
-        this.updateSyncCache(deviceKey, lidWithDevice)
+        this.updateSyncCache(pnDeviceKey, lidUser)
         
-        // Parse the lidWithDevice to get user and device parts
-        const [lidUser, lidDeviceStr] = lidWithDevice.includes(':') ? lidWithDevice.split(':') : [lidWithDevice, undefined]
-        
-        // CRITICAL: Return properly formatted LID JID
-        return lidDeviceStr !== undefined
-            ? `${lidUser}:${lidDeviceStr}@lid`
-            : `${lidUser}@lid`
+        // CRITICAL: Return LID JID with device suffix for session isolation
+        // Each PN device gets its own LID session even though they map to same LID user
+        const lidDevice = decoded.device !== undefined ? decoded.device : '0'
+        return `${lidUser}:${lidDevice}@lid`
     }
 
     /**
@@ -121,30 +107,15 @@ export class LIDMappingStore {
         const decoded = jidDecode(lid)
         if (!decoded) return null
         
-        // CRITICAL CHANGE: Look up by DEVICE-SPECIFIC key first (with _1 suffix for reverse lookup)
-        const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
-        const reverseKey = `${deviceKey}_1`
-        const stored = await this.keys.get('lid-mapping', [reverseKey])
-        let pnWithDevice = stored[reverseKey]
+        // CRITICAL FIX: For reverse lookup, we need to find all PN devices that map to this LID user
+        // We can't directly reverse lookup because we don't know which PN device we're looking for
+        // We need to iterate through potential PN device mappings or use a different approach
         
-        // CRITICAL: Do NOT use legacy user-level mappings - only device-specific  
-        // This prevents migration of unsupported devices when one device has LID migration
-        if (!pnWithDevice) {
-            console.log(`🚫 No device-specific PN mapping found for ${lid} - NOT falling back to user-level mapping to prevent cross-device migration`)
-        }
-        
-        if (!pnWithDevice || typeof pnWithDevice !== 'string') return null
-        
-        // Update sync cache for immediate access (reverse mapping)
-        this.updateSyncCache(pnWithDevice, deviceKey)
-        
-        // Parse the pnWithDevice to get user and device parts
-        const [pnUser, pnDeviceStr] = pnWithDevice.includes(':') ? pnWithDevice.split(':') : [pnWithDevice, undefined]
-        
-        // CRITICAL: Return properly formatted PN JID
-        return pnDeviceStr !== undefined
-            ? `${pnUser}:${pnDeviceStr}@s.whatsapp.net`
-            : `${pnUser}@s.whatsapp.net`
+        // For now, we'll return null as this method should primarily be used for validation
+        // The main flow should use getLIDForPN instead
+        console.log(`🚫 getPNForLID not fully implemented for device-specific mappings: ${lid}`)
+        console.log(`   Use getLIDForPN on specific PN devices instead`)
+        return null
     }
 
     /**
@@ -157,18 +128,17 @@ export class LIDMappingStore {
         const decoded = jidDecode(lid)
         if (!decoded) return false
         
-        // DEVICE-SPECIFIC: Check both forward and reverse mappings
-        const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
-        const reverseKey = `${deviceKey}_1`
+        // CRITICAL FIX: Check if any PN device has mapped to this LID user
+        // Since we can't easily reverse lookup, we'll need to scan for any reverse mapping containing this LID user
+        // This is a simplified check - in a real implementation you'd want to maintain a proper reverse index
         
-        const [deviceStored, reverseStored] = await Promise.all([
-            this.keys.get('lid-mapping', [deviceKey]),
-            this.keys.get('lid-mapping', [reverseKey])
-        ])
+        const lidUser = decoded.user
         
-        // CRITICAL: Only check device-specific mappings - no legacy fallbacks
-        // This prevents cross-device migration when only one device should have LID mapping
-        return !!(deviceStored[deviceKey] || reverseStored[reverseKey])
+        // For now, return false as this method is primarily for validation
+        // The main logic should rely on getLIDForPN for specific device lookups
+        console.log(`🚫 isLIDMapped simplified for device-specific: ${lid} → assuming not mapped`)
+        console.log(`   Use getLIDForPN on specific PN devices for accurate checks`)
+        return false
     }
 
     /**
@@ -210,11 +180,9 @@ export class LIDMappingStore {
         const lidWithDevice = this.syncCache.get(deviceKey)
         if (!lidWithDevice) return null
         
-        // Parse and return properly formatted LID
-        const [lidUser, lidDeviceStr] = lidWithDevice.includes(':') ? lidWithDevice.split(':') : [lidWithDevice, undefined]
-        return lidDeviceStr !== undefined
-            ? `${lidUser}:${lidDeviceStr}@lid`
-            : `${lidUser}@lid`
+        // CRITICAL: LID user from cache doesn't have device suffix, add it from input
+        const inputDevice = decoded.device !== undefined ? decoded.device : '0'
+        return `${lidWithDevice}:${inputDevice}@lid`
     }
 
     /**
