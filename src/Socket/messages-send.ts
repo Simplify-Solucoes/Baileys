@@ -1195,6 +1195,61 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					allJids.push(jid)
 				}
 
+				// Session conflict detection and recovery
+				// Check for corrupted sessions with own devices that might be caused by phone/codebase conflicts
+				const ownDeviceSessionCheck = meJids.filter(jid => jid.includes(mePnUser || ''))
+				if (ownDeviceSessionCheck.length > 0) {
+					try {
+						const sessionIds = ownDeviceSessionCheck.map(jid => signalRepository.jidToSignalProtocolAddress(jid))
+						const sessions = await authState.keys.get('session', sessionIds)
+						
+						let corruptedSessions = []
+						for (const sessionId of sessionIds) {
+							const sessionData = sessions[sessionId]
+							if (!sessionData) {
+								corruptedSessions.push(sessionId)
+							} else {
+								// Check if session data is valid (has proper structure)
+								try {
+									const sessionStr = sessionData.toString()
+									if (!sessionStr || sessionStr.length < 10) {
+										corruptedSessions.push(sessionId)
+									}
+								} catch {
+									corruptedSessions.push(sessionId)
+								}
+							}
+						}
+						
+						if (corruptedSessions.length > 0) {
+							logger.warn({
+								corruptedSessions,
+								totalOwnDevices: ownDeviceSessionCheck.length,
+								corruptedCount: corruptedSessions.length
+							}, '⚠️ Detected corrupted sessions with own devices - forcing session refresh')
+							
+							// Force session recreation for corrupted own devices
+							const corruptedJids = corruptedSessions.map(sessionId => {
+								// Convert back from signal address to JID
+								const parts = sessionId.split('.')
+								if (parts.length === 2) {
+									return `${parts[0]}:${parts[1]}@s.whatsapp.net`
+								} else {
+									const lidPart = parts[0]?.replace('_1', '')
+									return lidPart ? `${lidPart}@lid` : ''
+								}
+							}).filter(jid => jid) // Remove empty JIDs
+							
+							if (corruptedJids.length > 0) {
+								logger.info({ corruptedJids }, '🔄 Forcing session refresh for corrupted own devices')
+								await assertSessions(corruptedJids, true) // Force recreation
+							}
+						}
+					} catch (error) {
+						logger.warn({ error }, 'Failed to check own device session integrity')
+					}
+				}
+
 				await assertSessions(allJids, false)
 
 				logger.debug({ 
