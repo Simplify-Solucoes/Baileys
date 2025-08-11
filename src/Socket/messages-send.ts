@@ -794,6 +794,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		// WHATSMEOW EXACT: LID Priority - Automatic PN→LID migration when LID mapping exists
 		// Even if user typed a phone number, prefer LID when available (whatsmeow pattern)
 		let finalJid = jid
+		let recipientHasLidMapping = false
 		if (!isLid && !isGroup && !isStatus && !isNewsletter && server === 's.whatsapp.net') {
 			try {
 				const lidMapping = signalRepository.getLIDMappingStore()
@@ -801,6 +802,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				
 				if (lidForPN && lidForPN.includes('@lid')) {
 					// Found LID mapping - automatically migrate to LID (whatsmeow LID priority)
+					recipientHasLidMapping = true
 					logger.info({ 
 						originalPN: jid, 
 						lidAddress: lidForPN,
@@ -812,17 +814,29 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					user = lidDecoded!.user
 					server = 'lid'
 					isLid = true
+				} else {
+					logger.debug({ jid }, 'No LID mapping found for recipient - maintaining PN consistency')
 				}
 			} catch (error) {
 				logger.debug({ jid, error }, 'Failed to check LID mapping during message sending')
 			}
 		}
 
-		// WHATSMEOW PATTERN: Use LID identity when sending to HiddenUserServer (lid)
+		// CRITICAL FIX: Use LID identity only when recipient actually supports LID
+		// If recipient has no LID mapping, maintain PN consistency for all devices
 		let ownId = meId
-		if (isLid && meLid) {
+		let useConsistentPNFormat = false
+		
+		if (isLid && meLid && recipientHasLidMapping) {
 			ownId = meLid
-			logger.debug({ to: jid, ownId }, 'Using LID identity for HiddenUserServer message')
+			logger.debug({ to: jid, ownId, reason: 'lid_recipient' }, 'Using LID identity for LID recipient')
+		} else if (!isLid && !recipientHasLidMapping) {
+			// Recipient is PN-only (no LID mapping) - force PN consistency for all
+			useConsistentPNFormat = true
+			ownId = meId  // Force PN identity
+			logger.debug({ to: jid, ownId, reason: 'pn_consistency_no_lid_mapping' }, 'Using PN identity - recipient has no LID mapping')
+		} else {
+			logger.debug({ to: jid, ownId, reason: 'default' }, 'Using default identity selection')
 		}
 
 		msgId = msgId || generateMessageIDV2(sock.user?.id)
