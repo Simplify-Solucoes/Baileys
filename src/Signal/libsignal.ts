@@ -589,8 +589,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				return
 			}
 			
-			// WHATSMEOW PATTERN: Device-specific migration cache key (includes device ID)
-			// This ensures each device's session is migrated independently
+			// Device-specific migration - LID mapping already returns device-specific LIDs
 			const fromAddr = jidToSignalProtocolAddress(fromJid)
 			const toAddr = jidToSignalProtocolAddress(toJid)
 			const deviceSpecificMigrationKey = `${fromAddr.toString()}→${toAddr.toString()}`
@@ -626,35 +625,24 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					if (fromSession && fromSession.haveOpenSession()) {
 						console.log(`🔄 Migrating session data: ${fromJid} → ${toJid}`)
 						
-						// WHATSMEOW APPROACH: Deep copy session data to prevent ratchet state sharing
-						// CRITICAL: Create independent session objects to avoid cross-device contamination
-						try {
-							// Serialize the session to create a deep copy
-							// This prevents shared references that cause ratchet corruption
-							const sessionBytes = fromSession.serialize()
-							const copiedSession = libsignal.SessionRecord.deserialize(sessionBytes)
-							
-							// Session isolation: Each device gets an independent session copy
-							
-							// Store the COPY at LID address - not a reference!
-							await storage.storeSession(toAddrStr, copiedSession)
-							
-							console.log(`✅ Session data deep-copied and migrated: ${fromJid} → ${toJid}`)
-							console.log(`📊 Session serialized successfully`)
-							
-							// Store the mapping after successful session migration
-							await lidMapping.storeLIDPNMapping(toJid, fromJid)
-							console.log(`🔗 LID mapping stored after session migration: ${fromJid} ↔ ${toJid}`)
-							
-							markAsMigrated(deviceSpecificMigrationKey)
-							return
-							
-						} catch (migrationError) {
-							console.error(`❌ Session migration failed: ${fromJid} → ${toJid}:`, migrationError)
-							// Still store mapping even if session migration fails
-							await lidMapping.storeLIDPNMapping(toJid, fromJid)
-							throw migrationError
-						}
+						// WHATSMEOW APPROACH: MOVE session to prevent ratchet conflicts  
+						// CRITICAL: Don't copy - move the session to maintain ratchet state integrity
+						console.log(`📤 Moving session from ${fromAddrStr} to ${toAddrStr}`)
+						
+						// Store at LID address (move, not copy)
+						await storage.storeSession(toAddrStr, fromSession)
+						
+						// WHATSMEOW PATTERN: Delete from PN address after successful migration
+						await auth.keys.set({ session: { [fromAddrStr]: null } })
+						
+						console.log(`✅ Session moved successfully: ${fromJid} → ${toJid}`)
+						
+						// Store the mapping after successful session migration (use original LID for mapping)
+						await lidMapping.storeLIDPNMapping(toJid, fromJid)
+						console.log(`🔗 LID mapping stored after session migration: ${fromJid} ↔ ${toJid}`)
+						
+						markAsMigrated(deviceSpecificMigrationKey)
+						return
 					}
 					
 					// If no session exists, just store the mapping

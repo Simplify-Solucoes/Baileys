@@ -92,10 +92,10 @@ export class LIDMappingStore {
         // Update sync cache for immediate access
         this.updateSyncCache(pnDeviceKey, lidUser)
         
-        // CRITICAL: Return LID JID with device suffix for session isolation
-        // Each PN device gets its own LID session even though they map to same LID user
-        const lidDevice = decoded.device !== undefined ? decoded.device : '0'
-        return `${lidUser}:${lidDevice}@lid`
+        // CRITICAL: Push device ID from PN to LID to maintain session separation
+        // Even though native LID doesn't have device IDs, we need them for session targeting
+        const deviceId = decoded.device !== undefined ? decoded.device : '0'
+        return `${lidUser}:${deviceId}@lid`
     }
 
     /**
@@ -179,9 +179,9 @@ export class LIDMappingStore {
         const lidWithDevice = this.syncCache.get(deviceKey)
         if (!lidWithDevice) return null
         
-        // CRITICAL: LID user from cache doesn't have device suffix, add it from input
-        const inputDevice = decoded.device !== undefined ? decoded.device : '0'
-        return `${lidWithDevice}:${inputDevice}@lid`
+        // CRITICAL: Push device ID from PN to LID for session targeting
+        const deviceId = decoded.device !== undefined ? decoded.device : '0'  
+        return `${lidWithDevice}:${deviceId}@lid`
     }
 
     /**
