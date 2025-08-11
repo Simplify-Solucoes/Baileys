@@ -817,31 +817,50 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isNewsletter = server === 'newsletter'
 		
 		// WHATSMEOW EXACT: LID Priority - Automatic PN→LID migration when LID mapping exists
-		// Even if user typed a phone number, prefer LID when available (whatsmeow pattern)
-		let finalJid = jid
-		if (!isLid && !isGroup && !isStatus && !isNewsletter && server === 's.whatsapp.net') {
+		// MULTI-SESSION DELIVERY: Collect all available sessions for this contact
+		const targetSessions: string[] = [jid] // Always include user's explicit address
+		let primarySession = jid // Keep user's original choice as primary
+		
+		if (!isGroup && !isStatus && !isNewsletter) {
 			try {
 				const lidMapping = signalRepository.getLIDMappingStore()
-				const lidForPN = await lidMapping.getLIDForPN(jid)
 				
-				if (lidForPN && lidForPN.includes('@lid')) {
-					// Found LID mapping - automatically migrate to LID (whatsmeow LID priority)
-					logger.info({ 
-						originalPN: jid, 
-						lidAddress: lidForPN,
-						reason: 'whatsmeow_lid_priority'
-					}, '🔄 Auto-migrating message from PN to LID address')
-					
-					finalJid = lidForPN
-					const lidDecoded = jidDecode(lidForPN)
-					user = lidDecoded!.user
-					server = 'lid'
-					isLid = true
+				if (!isLid && server === 's.whatsapp.net') {
+					// User provided PN - check if LID session also exists
+					const lidForPN = await lidMapping.getLIDForPN(jid)
+					if (lidForPN && lidForPN.includes('@lid') && !targetSessions.includes(lidForPN)) {
+						targetSessions.push(lidForPN)
+						logger.debug({ originalPN: jid, foundLID: lidForPN }, 'Adding LID session for multi-session delivery')
+					}
+				} else if (isLid) {
+					// User provided LID - check if PN session also exists  
+					const pnForLID = await lidMapping.getPNForLID(jid)
+					if (pnForLID && pnForLID.includes('@s.whatsapp.net') && !targetSessions.includes(pnForLID)) {
+						targetSessions.push(pnForLID)
+						logger.debug({ originalLID: jid, foundPN: pnForLID }, 'Adding PN session for multi-session delivery')
+					}
 				}
 			} catch (error) {
-				logger.debug({ jid, error }, 'Failed to check LID mapping during message sending')
+				logger.debug({ jid, error }, 'Failed to check additional sessions during message sending')
 			}
 		}
+		
+		if (targetSessions.length > 1) {
+			logger.info({ 
+				userInput: jid, 
+				primarySession, 
+				allSessions: targetSessions,
+				sessionCount: targetSessions.length 
+			}, '📡 Multi-session delivery: sending to all available sessions')
+		} else {
+			logger.debug({ 
+				userInput: jid, 
+				singleSession: targetSessions[0] 
+			}, '📡 Single-session delivery: no additional sessions found')
+		}
+		
+		// Use primary session for addressing mode determination
+		let finalJid = primarySession
 
 		// WHATSMEOW PATTERN: Use LID identity when sending to HiddenUserServer (lid)
 		let ownId = meId
@@ -1076,20 +1095,29 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 
 						if (additionalAttributes?.['category'] !== 'peer') {
-							// WHATSMEOW PATTERN: Use user-level JID for device enumeration (like ownID.ToNonAD())
+							// MULTI-SESSION DELIVERY: Enumerate devices for ALL target sessions
 							// Convert device-specific JID to user-level JID to get all sender devices
 							const ownUserJid = jidEncode(jidDecode(ownId)!.user, jidDecode(ownId)!.server, undefined)
 							
-							logger.debug({ ownId, ownUserJid, finalJid }, 'Device enumeration: converting device-specific to user-level JID')
+							// Build enumeration list with sender + all target sessions
+							const enumerationTargets = [ownUserJid, ...targetSessions]
+							
+							logger.debug({ 
+								ownId, 
+								ownUserJid, 
+								targetSessions,
+								enumerationTargets 
+							}, 'Multi-session device enumeration for comprehensive delivery')
 							
 							// COMPANION DEVICE FIX: Always fetch fresh device list for proper multi-device delivery
-							// This ensures replies reach both primary and companion devices
-							const additionalDevices = await getUSyncDevices([ownUserJid, finalJid], false, false)
+							// This ensures messages reach all devices across all available sessions
+							const additionalDevices = await getUSyncDevices(enumerationTargets, false, false)
 							
 							logger.debug({ 
 								deviceCount: additionalDevices.length,
-								devices: additionalDevices.map(d => `${d.user}:${d.device}@${jidDecode(d.wireJid)?.server}`)
-							}, 'Enumerated devices for message sending')
+								devices: additionalDevices.map(d => `${d.user}:${d.device}@${jidDecode(d.wireJid)?.server}`),
+								sessionsTargeted: targetSessions.length
+							}, 'Enumerated devices for multi-session delivery')
 							// Replace placeholder entries with actual device enumeration
 							devices.length = 0 // Clear placeholders
 							devices.push(...additionalDevices)
