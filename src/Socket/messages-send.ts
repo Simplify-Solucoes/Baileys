@@ -1248,7 +1248,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				// SMART SESSION MANAGEMENT: Prevent corruption but maintain delivery
 				// Only isolate sessions during session management, not message delivery
-				const currentDeviceId = authState.creds.me?.id?.split(':')[1] || '0'
+				const currentDeviceId = authState.creds.me?.id?.split(':')[1]?.split('@')[0] || '0'
 				const currentDeviceJid = `${mePnUser}:${currentDeviceId}@s.whatsapp.net`
 				const mainDeviceJid = `${mePnUser}:0@s.whatsapp.net` // Device .0 (main device)
 				
@@ -1259,7 +1259,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					
 					// For PN sessions: manage current device + main device (.0)
 					if (jid.includes('@s.whatsapp.net')) {
-						return jid === currentDeviceJid || jid === mainDeviceJid
+						// Main device can be represented as either user@s.whatsapp.net or user:0@s.whatsapp.net
+						const isMainDevice = jid === `${mePnUser}@s.whatsapp.net` || jid === mainDeviceJid
+						const isCurrentDevice = jid === currentDeviceJid
+						return isCurrentDevice || isMainDevice
 					}
 					
 					return true
