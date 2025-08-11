@@ -973,13 +973,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					// Check if this is our device (could match either PN or LID user)
 					const isMe = user === meUser || user === mePnUser || (meLidUser && user === meLidUser)
 					
-					// CRITICAL FIX: Determine if this device user is a LID user (contains underscores)
-					const deviceIsLid = user.includes('_')
-					
-					// Use appropriate server based on the device's actual format, not destination
+					// CRITICAL FIX: Use the destination JID type (isLid) to determine server format
+					// This preserves the original intent - if sending to LID, create LID JIDs
+					// If sending to PN, create PN JIDs regardless of device user format
 					const jid = jidEncode(
 						isMe && isLid ? authState.creds?.me?.lid!.split(':')[0] || user : user,
-						deviceIsLid ? 'lid' : 's.whatsapp.net',
+						isLid ? 'lid' : 's.whatsapp.net',
 						device
 					)
 					
