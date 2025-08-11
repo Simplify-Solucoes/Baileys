@@ -277,33 +277,30 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		for (let jid of jids) {
 			const decoded = jidDecode(jid)
 			const user = decoded?.user
+			const device = decoded?.device
 			
-			// CRITICAL FIX: Handle LID addresses differently - don't treat as phone numbers
+			// CRITICAL FIX: Handle explicit device JIDs vs user JIDs
+			// Explicit device JIDs (like 102765716062358:58@lid) should be used as-is
+			// User JIDs (like 102765716062358@lid) need device enumeration
+			const isExplicitDevice = typeof device === 'number' && device >= 0
+			
 			if (jid.includes('@lid')) {
-				logger.debug({ jid }, 'Processing LID address - checking for existing LID sessions')
+				logger.debug({ jid, isExplicitDevice, device }, 'Processing LID address')
 				
-				// For LID addresses, check if we have existing LID sessions
-				// Don't try to fetch new devices since this is already a LID
-				const lidSignalId = signalRepository.jidToSignalProtocolAddress(jid)
-				const lidSessions = await authState.keys.get('session', [lidSignalId])
-				const hasLIDSession = !!lidSessions[lidSignalId]
-				
-				if (hasLIDSession) {
-					// We have existing LID session - use it directly
-					logger.info({ jid }, '✅ Found existing LID session')
+				if (isExplicitDevice) {
+					// This is an explicit device JID - use as-is, no enumeration needed
+					logger.debug({ jid }, '✅ Using explicit LID device JID as-is')
 					deviceResults.push({ 
 						user: user!, 
-						device: decoded?.device || 0 
+						device: device! 
 					})
 				} else {
-					// No LID session found - create new LID session directly
-					// CRITICAL FIX: Don't fallback to PN sessions when sending to LID addresses
-					// If user is sending to a LID, they want LID messaging, not PN fallback
-					logger.warn({ jid }, '❌ No LID session found - will create new LID session')
-					// Create LID device entry for new session creation
+					// This is a user JID - would need device enumeration, but since it's LID
+					// and we don't do server queries for LID, just use device 0
+					logger.debug({ jid }, 'Processing LID user JID - using device 0')
 					deviceResults.push({ 
 						user: user!, 
-						device: decoded?.device || 0 
+						device: 0 
 					})
 				}
 				continue // Skip normal processing for LID addresses
@@ -311,6 +308,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			
 			// Normal PN processing - WHATSMEOW PATTERN: Check for LID mapping first (LID priority)
 			jid = jidNormalizedUser(jid)
+			
+			// Check if this is an explicit PN device JID
+			const originalDecoded = jidDecode(jid)
+			const originalDevice = originalDecoded?.device
+			const isExplicitPNDevice = typeof originalDevice === 'number' && originalDevice >= 0
+			
+			if (isExplicitPNDevice) {
+				// This is an explicit PN device JID - use as-is, no enumeration needed
+				logger.debug({ jid }, '✅ Using explicit PN device JID as-is')
+				deviceResults.push({ 
+					user: user!, 
+					device: originalDevice! 
+				})
+				continue // Skip enumeration for explicit device JIDs
+			}
 			
 			// WHATSMEOW EXACT: Automatic PN→LID migration when LID mapping exists
 			// Even if user typed a phone number, prefer LID when available
@@ -323,7 +335,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					logger.info({ originalPN: jid, lidAddress: lidForPN }, '✅ Auto-migrating PN to LID (whatsmeow LID priority)')
 					
 					// Process as LID address (same logic as LID processing above)
-					const lidDecoded = jidDecode(lidForPN)
 					const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
 					const lidSessions = await authState.keys.get('session', [lidSignalId])
 					const hasLIDSession = !!lidSessions[lidSignalId]
@@ -332,13 +343,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						logger.info({ lidForPN }, '✅ Found existing LID session for migrated address')
 						deviceResults.push({ 
 							user: user!, // Keep original PN user ID to avoid duplicates
-							device: decoded?.device || 0 
+							device: 0 // Use device 0 for user-level LID mappings
 						})
 					} else {
 						logger.warn({ lidForPN }, '❌ No LID session found for migrated address - will create new LID session')
 						deviceResults.push({ 
 							user: user!, // Keep original PN user ID to avoid duplicates
-							device: decoded?.device || 0 
+							device: 0 // Use device 0 for user-level LID mappings
 						})
 					}
 					
