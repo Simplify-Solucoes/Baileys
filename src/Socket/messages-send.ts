@@ -309,8 +309,47 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				continue // Skip normal processing for LID addresses
 			}
 			
-			// Normal PN processing
+			// Normal PN processing - WHATSMEOW PATTERN: Check for LID mapping first (LID priority)
 			jid = jidNormalizedUser(jid)
+			
+			// WHATSMEOW EXACT: Automatic PN→LID migration when LID mapping exists
+			// Even if user typed a phone number, prefer LID when available
+			try {
+				const lidMapping = signalRepository.getLIDMappingStore()
+				const lidForPN = await lidMapping.getLIDForPN(jid)
+				
+				if (lidForPN && lidForPN.includes('@lid')) {
+					// Found LID mapping - use LID instead of PN (whatsmeow pattern)
+					logger.info({ originalPN: jid, lidAddress: lidForPN }, '✅ Auto-migrating PN to LID (whatsmeow LID priority)')
+					
+					// Process as LID address (same logic as LID processing above)
+					const lidDecoded = jidDecode(lidForPN)
+					const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
+					const lidSessions = await authState.keys.get('session', [lidSignalId])
+					const hasLIDSession = !!lidSessions[lidSignalId]
+					
+					if (hasLIDSession) {
+						logger.info({ lidForPN }, '✅ Found existing LID session for migrated address')
+						deviceResults.push({ 
+							user: lidDecoded!.user, 
+							device: lidDecoded?.device || 0 
+						})
+					} else {
+						logger.warn({ lidForPN }, '❌ No LID session found for migrated address - will create new LID session')
+						deviceResults.push({ 
+							user: lidDecoded!.user, 
+							device: lidDecoded?.device || 0 
+						})
+					}
+					
+					// Skip normal PN processing since we're using LID
+					continue
+				}
+			} catch (error) {
+				logger.debug({ jid, error }, 'Failed to check LID mapping during PN processing')
+			}
+			
+			// Continue with normal PN processing if no LID mapping found
 			if (useCache) {
 				const devices = userDevicesCache.get<JidWithDevice[]>(user!)
 				if (devices) {
@@ -733,12 +772,39 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		let shouldIncludeDeviceIdentity = false
 
-		const { user, server } = jidDecode(jid)!
+		let { user, server } = jidDecode(jid)!
 		const statusJid = 'status@broadcast'
 		const isGroup = server === 'g.us'
 		const isStatus = jid === statusJid
-		const isLid = server === 'lid'
+		let isLid = server === 'lid'
 		const isNewsletter = server === 'newsletter'
+		
+		// WHATSMEOW EXACT: LID Priority - Automatic PN→LID migration when LID mapping exists
+		// Even if user typed a phone number, prefer LID when available (whatsmeow pattern)
+		let finalJid = jid
+		if (!isLid && !isGroup && !isStatus && !isNewsletter && server === 's.whatsapp.net') {
+			try {
+				const lidMapping = signalRepository.getLIDMappingStore()
+				const lidForPN = await lidMapping.getLIDForPN(jid)
+				
+				if (lidForPN && lidForPN.includes('@lid')) {
+					// Found LID mapping - automatically migrate to LID (whatsmeow LID priority)
+					logger.info({ 
+						originalPN: jid, 
+						lidAddress: lidForPN,
+						reason: 'whatsmeow_lid_priority'
+					}, '🔄 Auto-migrating message from PN to LID address')
+					
+					finalJid = lidForPN
+					const lidDecoded = jidDecode(lidForPN)
+					user = lidDecoded!.user
+					server = 'lid'
+					isLid = true
+				}
+			} catch (error) {
+				logger.debug({ jid, error }, 'Failed to check LID mapping during message sending')
+			}
+		}
 
 		// WHATSMEOW PATTERN: Use LID identity when sending to HiddenUserServer (lid)
 		let ownId = meId
@@ -752,7 +818,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		useCachedGroupMetadata = useCachedGroupMetadata !== false && !isStatus
 
 		const participants: BinaryNode[] = []
-		const destinationJid = !isStatus ? jidEncode(user, isLid ? 'lid' : isGroup ? 'g.us' : 's.whatsapp.net') : statusJid
+		const destinationJid = !isStatus ? finalJid : statusJid
 
 		// PRIVACY TOKENS: Get privacy token for recipient (following whatsmeow approach)
 		const privacyToken = !isGroup && !isStatus ? await getPrivacyToken(destinationJid) : null
@@ -956,7 +1022,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							// WHATSMEOW PATTERN: Use ownId (which might be LID) for device resolution
 							// COMPANION DEVICE FIX: Always fetch fresh device list for proper multi-device delivery
 							// This ensures replies reach both primary and companion devices
-							const additionalDevices = await getUSyncDevices([ownId, jid], false, true)
+							const additionalDevices = await getUSyncDevices([ownId, finalJid], false, true)
 							devices.push(...additionalDevices)
 						}
 					}
