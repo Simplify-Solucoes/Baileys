@@ -225,50 +225,34 @@ export const decryptMessageNode = (
 							case 'pkmsg':
 							case 'msg':
 								// WHATSMEOW EXACT: Simple LID priority system (message.go:948-961)
-								const { addressingMode, senderAlt, recipientAlt } = extractAddressingContext(stanza, sender)
+								const { addressingMode, senderAlt } = extractAddressingContext(stanza, sender)
 								let senderEncryptionJid = sender
 								
-								// SELECTIVE LID discovery from message metadata - only for devices that explicitly provide LID
-								// DEVICE-SPECIFIC MIGRATION: Only migrate the device that sends LID metadata, not all user devices
+								// Store LID mapping when detected from message metadata
+								// CRITICAL FIX: 1:1 device mapping - each PN device maps to corresponding LID device
 								if (senderAlt && isLidUser(senderAlt) && isJidUser(sender)) {
 									const senderDecoded = jidDecode(sender)
 									const senderDevice = senderDecoded?.device || 0
 									
 									try {
-										// Store device-specific LID mapping (this device explicitly supports LID)
 										await repository.storeLIDPNMapping(senderAlt, sender)
-										logger.debug({ sender, senderAlt, device: senderDevice }, 'Stored SELECTIVE 1:1 LID mapping from device metadata (device supports LID)')
+										logger.debug({ sender, senderAlt, device: senderDevice }, 'Stored 1:1 LID mapping from device metadata')
 										
-										// DEVICE-SPECIFIC MIGRATION: Only migrate THIS device, not all devices for the user
+										// CRITICAL FIX: Migrate session immediately after storing mapping
+										// This ensures the LID session exists for decryption
 										const lidStore = repository.getLIDMappingStore()
 										const deviceSpecificLid = await lidStore.getLIDForPN(sender)
 										
 										if (deviceSpecificLid) {
 											const { exists: hasLIDSession } = await repository.validateSession(deviceSpecificLid)
 											if (!hasLIDSession) {
-												logger.info({ sender, deviceSpecificLid, device: senderDevice }, '🔄 SELECTIVE migration: migrating ONLY this device (not all user devices)')
+												logger.info({ sender, deviceSpecificLid, device: senderDevice }, '🔄 Migrating PN session to LID after mapping creation')
 												await repository.migrateSession(sender, deviceSpecificLid)
-												logger.info({ sender, deviceSpecificLid, device: senderDevice }, '✅ SELECTIVE migration completed for device-specific LID (other devices untouched)')
-											} else {
-												logger.debug({ sender, deviceSpecificLid, device: senderDevice }, 'LID session already exists for this device, skipping migration')
+												logger.info({ sender, deviceSpecificLid, device: senderDevice }, '✅ Session migrated to device-specific LID')
 											}
 										}
 									} catch (error) {
-										logger.error({ sender, senderAlt, error }, 'Failed to store SELECTIVE LID mapping from metadata')
-									}
-								}
-								
-								// SELECTIVE recipient LID discovery - only for recipients that explicitly provide LID
-								const recipient = stanza.attrs.recipient
-								if (recipientAlt && recipient) {
-									if (isLidUser(recipientAlt) && isJidUser(recipient)) {
-										try {
-											// Store recipient LID mapping (recipient device explicitly supports LID)
-											await repository.storeLIDPNMapping(recipientAlt, recipient)
-											logger.debug({ recipient, recipientAlt }, 'Stored SELECTIVE recipient LID mapping from message metadata (recipient supports LID)')
-										} catch (error) {
-											logger.error({ recipient, recipientAlt, error }, 'Failed to store SELECTIVE recipient LID mapping')
-										}
+										logger.error({ sender, senderAlt, error }, 'Failed to store LID mapping from metadata')
 									}
 								}
 								

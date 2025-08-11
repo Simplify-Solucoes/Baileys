@@ -351,8 +351,6 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 	statusJidList?: string[]
 	/** specific devices to target for receipt timeout resends */
 	targetDevices?: string[]
-	/** Override the wire JID when using LID for message generation */
-	wireJidOverride?: string
 }
 
 export type MiscMessageGenerationOptions = MinimalRelayOptions & {

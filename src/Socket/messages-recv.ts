@@ -551,50 +551,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				await handleEncryptNotification(node)
 				break
 			case 'devices':
-				// SELECTIVE LID discovery from device notifications - only for devices that explicitly provide LID
-				const fromLID = node.attrs.lid // LID attribute in notification node
-				if (fromLID) {
-					// Store LID-PN mapping when detected (device-specific, not user-wide)
-					await signalRepository.storeLIDPNMapping(fromLID, from)
-					logger.debug({ from, fromLID }, 'Stored LID-PN mapping from device notification (selective discovery)')
-				}
-				
 				const devices = getBinaryNodeChildren(child, 'device')
 				if (areJidsSameUser(child!.attrs.jid, authState.creds.me!.id)) {
 					const deviceJids = devices.map(d => d.attrs.jid)
 					logger.info({ deviceJids }, 'got my own devices')
-				} else {
-					// SELECTIVE device processing - only store LID for devices that explicitly provide it
-					if (child) {
-						for (const action of getAllBinaryNodeChildren(child)) {
-							if (action.tag !== 'add' && action.tag !== 'remove' && action.tag !== 'update') {
-								logger.debug({ tag: action.tag }, 'Unknown device list change tag')
-								continue
-							}
-							
-							const deviceNode = getBinaryNodeChild(action, 'device')
-							if (deviceNode) {
-								const deviceJID = deviceNode.attrs.jid
-								const deviceLID = deviceNode.attrs.lid
-								
-								// CRITICAL: Only store mapping if device explicitly provides LID
-								// Do NOT assume all devices support LID - only migrate LID-capable devices
-								if (deviceJID && deviceLID) {
-									await signalRepository.storeLIDPNMapping(deviceLID, deviceJID)
-									logger.debug({ 
-										deviceJID, 
-										deviceLID, 
-										action: action.tag 
-									}, 'Stored SELECTIVE device-specific LID mapping (device explicitly supports LID)')
-								} else if (deviceJID && !deviceLID) {
-									logger.debug({ 
-										deviceJID, 
-										action: action.tag 
-									}, 'Device notification without LID - device does not support LID, skipping')
-								}
-							}
-						}
-					}
 				}
 
 				break
