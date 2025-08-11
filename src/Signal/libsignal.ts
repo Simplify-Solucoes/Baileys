@@ -703,13 +703,21 @@ const jidToSignalProtocolAddress = (jid: string) => {
 	const decoded = jidDecode(jid)!
 	const { user, device, server } = decoded
 	
+	// DEBUG: Log device ID extraction for LID addresses
+	if (server === 'lid') {
+		console.log(`🔍 jidToSignalProtocolAddress DEBUG: jid=${jid}, user=${user}, device=${device}, server=${server}`)
+	}
+	
 	// Handle LID addresses by appending _1
 	let signalUser = user
 	if (server === 'lid') {
 		signalUser = `${user}_1`
 	}
 	
-	return new libsignal.ProtocolAddress(signalUser, device || 0)
+	const finalDevice = device || 0
+	console.log(`📡 Signal address created: ${signalUser}.${finalDevice} (from ${jid})`)
+	
+	return new libsignal.ProtocolAddress(signalUser, finalDevice)
 }
 
 const signalProtocolAddressToJid = (encodedAddress: string) => {

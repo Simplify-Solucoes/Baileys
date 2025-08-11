@@ -96,7 +96,9 @@ export class LIDMappingStore {
         this.updateSyncCache(pnDeviceKey, lidWithDevice)
         
         // Return the exact 1:1 mapped LID device
-        return `${lidWithDevice}@lid`
+        const result = `${lidWithDevice}@lid`
+        console.log(`🔍 getLIDForPN DEBUG: returning ${result} for PN ${pn}`)
+        return result
     }
 
     /**
