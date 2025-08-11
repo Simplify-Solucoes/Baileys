@@ -369,12 +369,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// Skip normal PN processing since we're using LID
 						continue
 					} else {
-						logger.warn({ lidForPN }, '❌ No LID session found for migrated address - falling back to PN session creation')
-						// CRITICAL FIX: Don't create LID devices without sessions, fall back to PN
-						// This prevents missing sessions when LID mapping exists but LID session doesn't
-						// Continue to normal PN processing instead of using broken LID
-						logger.info({ originalPN: jid }, '🔄 Falling back to PN session creation for contact without LID session')
-						// Don't continue here - fall through to normal PN processing
+						// CRITICAL FIX: Check if this is our own device vs contact device
+						const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
+						const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
+						
+						if (isOwnDevice) {
+							// For own devices, create LID session even if it doesn't exist yet
+							logger.info({ lidForPN, currentUser: currentUserJid }, '🔄 Own device with LID mapping but no LID session - creating LID device')
+							deviceResults.push({ 
+								user: lidUser!, // Use LID user for internal tracking
+								device: 0, // Use device 0 for user-level LID mappings
+								wireJid: jidEncode(lidUser!, 'lid', 0) // Wire JID uses LID format
+							})
+							// Skip normal PN processing since we're using LID
+							continue
+						} else {
+							// For contact devices, fall back to PN when LID session missing
+							logger.warn({ lidForPN, contact: jid }, '❌ Contact has LID mapping but no LID session - falling back to PN session creation')
+							logger.info({ originalPN: jid }, '🔄 Falling back to PN session creation for contact without LID session')
+							// Don't continue here - fall through to normal PN processing
+						}
 					}
 				}
 				} catch (error) {
@@ -614,10 +628,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							if (hasSession) {
 								logger.info({ jid, lidForPN }, '✅ Found migrated LID session, skipping PN fetch')
 							} else {
-								// CRITICAL FIX: Don't create LID sessions without existing session, fall back to PN
-								logger.warn({ jid, lidForPN }, '❌ LID mapping exists but no LID session - falling back to PN session creation')
-								// Keep jidToFetch as original PN jid to create PN session instead
-								hasSession = false // Ensure PN session creation continues
+								// CRITICAL FIX: Check if this is our own device vs contact device
+								const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
+								const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
+								
+								if (isOwnDevice) {
+									// For own devices, use LID session creation even if it doesn't exist yet
+									logger.info({ jid, lidForPN, currentUser: currentUserJid }, '🔄 Own device with LID mapping but no LID session - will create LID session')
+									jidToFetch = lidForPN // Use LID JID for session creation
+								} else {
+									// For contact devices, fall back to PN when LID session missing
+									logger.warn({ jid, lidForPN, contact: jid }, '❌ Contact has LID mapping but no LID session - falling back to PN session creation')
+									// Keep jidToFetch as original PN jid to create PN session instead
+									hasSession = false // Ensure PN session creation continues
+								}
 							}
 						} else {
 							logger.debug({ jid }, 'No LID mapping found, will create PN session')
