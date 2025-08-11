@@ -79,14 +79,10 @@ export class LIDMappingStore {
         const stored = await this.keys.get('lid-mapping', [deviceKey])
         let lidWithDevice = stored[deviceKey]
         
-        // If device-specific mapping not found, try base user lookup (legacy compatibility)
+        // CRITICAL: Do NOT use legacy user-level mappings - only device-specific
+        // This prevents migration of unsupported devices when one device has LID migration
         if (!lidWithDevice) {
-            const legacyStored = await this.keys.get('lid-mapping', [decoded.user])
-            const legacyLidUser = legacyStored[decoded.user]
-            if (legacyLidUser) {
-                console.log(`⚠️ Using legacy user-level LID mapping for ${pn} → ${legacyLidUser} (consider device-specific migration)`)
-                lidWithDevice = legacyLidUser
-            }
+            console.log(`🚫 No device-specific LID mapping found for ${pn} - NOT falling back to user-level mapping to prevent cross-device migration`)
         }
         
         // CRITICAL FIX: If not found, try to see if this is actually a LID being passed as PN
@@ -131,14 +127,10 @@ export class LIDMappingStore {
         const stored = await this.keys.get('lid-mapping', [reverseKey])
         let pnWithDevice = stored[reverseKey]
         
-        // If device-specific mapping not found, try base user lookup (legacy compatibility)
+        // CRITICAL: Do NOT use legacy user-level mappings - only device-specific  
+        // This prevents migration of unsupported devices when one device has LID migration
         if (!pnWithDevice) {
-            const legacyStored = await this.keys.get('lid-mapping', [`${decoded.user}_1`])
-            const legacyPnUser = legacyStored[`${decoded.user}_1`]
-            if (legacyPnUser) {
-                console.log(`⚠️ Using legacy user-level PN mapping for ${lid} → ${legacyPnUser} (consider device-specific migration)`)
-                pnWithDevice = legacyPnUser
-            }
+            console.log(`🚫 No device-specific PN mapping found for ${lid} - NOT falling back to user-level mapping to prevent cross-device migration`)
         }
         
         if (!pnWithDevice || typeof pnWithDevice !== 'string') return null
@@ -169,21 +161,14 @@ export class LIDMappingStore {
         const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
         const reverseKey = `${deviceKey}_1`
         
-        const [deviceStored, reverseStored, legacyForward, legacyReverse] = await Promise.all([
+        const [deviceStored, reverseStored] = await Promise.all([
             this.keys.get('lid-mapping', [deviceKey]),
-            this.keys.get('lid-mapping', [reverseKey]),
-            // Legacy compatibility checks
-            this.keys.get('lid-mapping', [decoded.user]),
-            this.keys.get('lid-mapping', [`${decoded.user}_1`])
+            this.keys.get('lid-mapping', [reverseKey])
         ])
         
-        // LID is mapped if either device-specific or legacy mapping exists
-        return !!(
-            deviceStored[deviceKey] || 
-            reverseStored[reverseKey] ||
-            legacyForward[decoded.user] || 
-            legacyReverse[`${decoded.user}_1`]
-        )
+        // CRITICAL: Only check device-specific mappings - no legacy fallbacks
+        // This prevents cross-device migration when only one device should have LID mapping
+        return !!(deviceStored[deviceKey] || reverseStored[reverseKey])
     }
 
     /**
@@ -197,9 +182,9 @@ export class LIDMappingStore {
     }
 
     /**
-     * Helper to manage small sync cache
+     * Helper to manage small sync cache - DEVICE-SPECIFIC KEYS ONLY
      */
-    private updateSyncCache(pnUser: string, lidUser: string): void {
+    private updateSyncCache(pnWithDevice: string, lidWithDevice: string): void {
         // Keep cache small - remove oldest if needed
         if (this.syncCache.size >= this.maxCacheSize) {
             const firstKey = this.syncCache.keys().next().value
@@ -207,11 +192,12 @@ export class LIDMappingStore {
                 this.syncCache.delete(firstKey)
             }
         }
-        this.syncCache.set(pnUser, lidUser)
+        // Store with device-specific key to prevent cross-device cache pollution
+        this.syncCache.set(pnWithDevice, lidWithDevice)
     }
 
     /**
-     * Fast synchronous cache lookup for retry scenarios
+     * Fast synchronous cache lookup for retry scenarios - DEVICE-SPECIFIC ONLY
      */
     getFromCache(pn: string): string | null {
         if (!isJidUser(pn)) return null
@@ -219,13 +205,15 @@ export class LIDMappingStore {
         const decoded = jidDecode(pn)
         if (!decoded) return null
         
-        // Check sync cache first
-        const lidUser = this.syncCache.get(decoded.user)
-        if (!lidUser) return null
+        // DEVICE-SPECIFIC: Use device-specific key for cache lookup
+        const deviceKey = decoded.device !== undefined ? `${decoded.user}:${decoded.device}` : decoded.user
+        const lidWithDevice = this.syncCache.get(deviceKey)
+        if (!lidWithDevice) return null
         
-        // CRITICAL: Preserve device ID from input
-        return decoded.device !== undefined
-            ? `${lidUser}:${decoded.device}@lid`
+        // Parse and return properly formatted LID
+        const [lidUser, lidDeviceStr] = lidWithDevice.includes(':') ? lidWithDevice.split(':') : [lidWithDevice, undefined]
+        return lidDeviceStr !== undefined
+            ? `${lidUser}:${lidDeviceStr}@lid`
             : `${lidUser}@lid`
     }
 
