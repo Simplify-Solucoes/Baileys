@@ -229,9 +229,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		await sendReceipts(keys, readType)
 	}
 
+	/** Enhanced device info that preserves wire JID format */
+	type DeviceWithWireJid = JidWithDevice & {
+		wireJid: string // The exact JID format that should be used in wire protocol
+	}
+
 	/** Fetch all the devices we've to send a message to */
-	const getUSyncDevices = async (jids: string[], useCache: boolean, ignoreZeroDevices: boolean) => {
-		const deviceResults: JidWithDevice[] = []
+	const getUSyncDevices = async (jids: string[], useCache: boolean, ignoreZeroDevices: boolean): Promise<DeviceWithWireJid[]> => {
+		const deviceResults: DeviceWithWireJid[] = []
 
 		// DEBUG: Log input JIDs to understand what's being passed
 		logger.debug({ jids, useCache, ignoreZeroDevices }, '🔍 getUSyncDevices called with JIDs')
@@ -292,7 +297,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					logger.debug({ jid }, '✅ Using explicit LID device JID as-is')
 					deviceResults.push({ 
 						user: user!, 
-						device: device! 
+						device: device!,
+						wireJid: jid // Preserve exact JID format
 					})
 				} else {
 					// This is a user JID - would need device enumeration, but since it's LID
@@ -300,7 +306,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					logger.debug({ jid }, 'Processing LID user JID - using device 0')
 					deviceResults.push({ 
 						user: user!, 
-						device: 0 
+						device: 0,
+						wireJid: jidEncode(user!, 'lid', 0) // Construct LID device JID
 					})
 				}
 				continue // Skip normal processing for LID addresses
@@ -319,7 +326,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				logger.debug({ jid }, '✅ Using explicit PN device JID as-is')
 				deviceResults.push({ 
 					user: user!, 
-					device: originalDevice! 
+					device: originalDevice!,
+					wireJid: jid // Preserve exact JID format
 				})
 				continue // Skip enumeration for explicit device JIDs
 			}
@@ -339,17 +347,24 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const lidSessions = await authState.keys.get('session', [lidSignalId])
 					const hasLIDSession = !!lidSessions[lidSignalId]
 					
+					// CRITICAL: When auto-migrating PN→LID, the wire JID should be LID format
+					// This matches whatsmeow's behavior where migrated JIDs use LID in the envelope
+					const lidDecoded = jidDecode(lidForPN)
+					const lidUser = lidDecoded?.user
+					
 					if (hasLIDSession) {
 						logger.info({ lidForPN }, '✅ Found existing LID session for migrated address')
 						deviceResults.push({ 
-							user: user!, // Keep original PN user ID to avoid duplicates
-							device: 0 // Use device 0 for user-level LID mappings
+							user: lidUser!, // Use LID user for internal tracking
+							device: 0, // Use device 0 for user-level LID mappings
+							wireJid: jidEncode(lidUser!, 'lid', 0) // Wire JID uses LID format
 						})
 					} else {
 						logger.warn({ lidForPN }, '❌ No LID session found for migrated address - will create new LID session')
 						deviceResults.push({ 
-							user: user!, // Keep original PN user ID to avoid duplicates
-							device: 0 // Use device 0 for user-level LID mappings
+							user: lidUser!, // Use LID user for internal tracking
+							device: 0, // Use device 0 for user-level LID mappings
+							wireJid: jidEncode(lidUser!, 'lid', 0) // Wire JID uses LID format
 						})
 					}
 					
@@ -364,7 +379,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (useCache) {
 				const devices = userDevicesCache.get<JidWithDevice[]>(user!)
 				if (devices) {
-					deviceResults.push(...devices)
+					// Convert cached devices to wire format
+					const devicesWithWire = devices.map(d => ({
+						...d,
+						wireJid: jidEncode(d.user, 's.whatsapp.net', d.device)
+					}))
+					deviceResults.push(...devicesWithWire)
 
 					logger.trace({ user }, 'using cache for devices')
 				} else {
@@ -395,7 +415,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				deviceMap[item.user] = deviceMap[item.user] || []
 				deviceMap[item.user]?.push(item)
 
-				deviceResults.push(item)
+				// Convert to DeviceWithWireJid - devices from PN enumeration use PN wire format
+				const deviceWithWire: DeviceWithWireJid = {
+					...item,
+					wireJid: jidEncode(item.user, 's.whatsapp.net', item.device)
+				}
+				deviceResults.push(deviceWithWire)
 			}
 
 			for (const key in deviceMap) {
@@ -794,7 +819,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		// WHATSMEOW EXACT: LID Priority - Automatic PN→LID migration when LID mapping exists
 		// Even if user typed a phone number, prefer LID when available (whatsmeow pattern)
 		let finalJid = jid
-		let recipientHasLidMapping = false
 		if (!isLid && !isGroup && !isStatus && !isNewsletter && server === 's.whatsapp.net') {
 			try {
 				const lidMapping = signalRepository.getLIDMappingStore()
@@ -802,7 +826,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				
 				if (lidForPN && lidForPN.includes('@lid')) {
 					// Found LID mapping - automatically migrate to LID (whatsmeow LID priority)
-					recipientHasLidMapping = true
 					logger.info({ 
 						originalPN: jid, 
 						lidAddress: lidForPN,
@@ -814,29 +837,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					user = lidDecoded!.user
 					server = 'lid'
 					isLid = true
-				} else {
-					logger.debug({ jid }, 'No LID mapping found for recipient - maintaining PN consistency')
 				}
 			} catch (error) {
 				logger.debug({ jid, error }, 'Failed to check LID mapping during message sending')
 			}
 		}
 
-		// CRITICAL FIX: Use LID identity only when recipient actually supports LID
-		// If recipient has no LID mapping, maintain PN consistency for all devices
+		// WHATSMEOW PATTERN: Use LID identity when sending to HiddenUserServer (lid)
 		let ownId = meId
-		let useConsistentPNFormat = false
-		
-		if (isLid && meLid && recipientHasLidMapping) {
+		if (isLid && meLid) {
 			ownId = meLid
-			logger.debug({ to: jid, ownId, reason: 'lid_recipient' }, 'Using LID identity for LID recipient')
-		} else if (!isLid && !recipientHasLidMapping) {
-			// Recipient is PN-only (no LID mapping) - force PN consistency for all
-			useConsistentPNFormat = true
-			ownId = meId  // Force PN identity
-			logger.debug({ to: jid, ownId, reason: 'pn_consistency_no_lid_mapping' }, 'Using PN identity - recipient has no LID mapping')
-		} else {
-			logger.debug({ to: jid, ownId, reason: 'default' }, 'Using default identity selection')
+			logger.debug({ to: jid, ownId }, 'Using LID identity for HiddenUserServer message')
 		}
 
 		msgId = msgId || generateMessageIDV2(sock.user?.id)
@@ -850,7 +861,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const privacyToken = !isGroup && !isStatus ? await getPrivacyToken(destinationJid) : null
 		
 		const binaryNodeContent: BinaryNode[] = []
-		const devices: JidWithDevice[] = []
+		const devices: DeviceWithWireJid[] = []
 
 		const meMsg: proto.IMessage = {
 			deviceSentMessage: {
@@ -870,7 +881,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			const { user, device } = jidDecode(participant.jid)!
-			devices.push({ user, device })
+			devices.push({ 
+				user, 
+				device,
+				wireJid: participant.jid // Use the participant JID as wire JID
+			})
 		}
 
 		await authState.keys.transaction(async () => {
@@ -1032,7 +1047,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						for (const deviceJid of targetDevices) {
 							const decoded = jidDecode(deviceJid)
 							if (decoded) {
-								devices.push({ user: decoded.user, device: decoded.device })
+								devices.push({ 
+									user: decoded.user, 
+									device: decoded.device,
+									wireJid: deviceJid // Use the target device JID as wire JID
+								})
 							}
 						}
 						logger.info({
@@ -1042,9 +1061,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}, 'Sending to specific devices due to missing receipts')
 					} else {
 						// Normal device resolution
-						devices.push({ user })
+						// These are placeholder entries that will be replaced by actual device enumeration
+						devices.push({ 
+							user, 
+							device: 0,
+							wireJid: jidEncode(user, user.includes('_') ? 'lid' : 's.whatsapp.net', 0)
+						})
 						if (user !== meUser) {
-							devices.push({ user: meUser })
+							devices.push({ 
+								user: meUser, 
+								device: 0,
+								wireJid: jidEncode(meUser, 's.whatsapp.net', 0)
+							})
 						}
 
 						if (additionalAttributes?.['category'] !== 'peer') {
@@ -1052,6 +1080,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							// COMPANION DEVICE FIX: Always fetch fresh device list for proper multi-device delivery
 							// This ensures replies reach both primary and companion devices
 							const additionalDevices = await getUSyncDevices([ownId, finalJid], false, false)
+							// Replace placeholder entries with actual device enumeration
+							devices.length = 0 // Clear placeholders
 							devices.push(...additionalDevices)
 						}
 					}
@@ -1064,18 +1094,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const { user: mePnUser } = jidDecode(meId)!
 				const { user: meLidUser } = meLid ? jidDecode(meLid)! : { user: null }
 				
-				for (const { user, device } of devices) {
+				for (const { user, wireJid } of devices) {
 					// Check if this is our device (could match either PN or LID user)
 					const isMe = user === meUser || user === mePnUser || (meLidUser && user === meLidUser)
 					
-					// CRITICAL FIX: Use the destination JID type (isLid) to determine server format
-					// This preserves the original intent - if sending to LID, create LID JIDs
-					// If sending to PN, create PN JIDs regardless of device user format
-					const jid = jidEncode(
-						isMe && isLid ? authState.creds?.me?.lid!.split(':')[0] || user : user,
-						isLid ? 'lid' : 's.whatsapp.net',
-						device
-					)
+					// WHATSMEOW EXACT: Use the wire JID exactly as returned from device enumeration
+					// This preserves the correct server format based on what was originally queried
+					const jid = wireJid
 					
 					if (isMe) {
 						meJids.push(jid)
