@@ -36,6 +36,7 @@ import {
 } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
 import { getMessageSenderJid } from '../Utils/sender-identity'
+import { makeKeyedMutex } from '../Utils/make-mutex'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -122,6 +123,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			stdTTL: DEFAULT_CACHE_TTLS.USER_DEVICES, // 5 minutes
 			useClones: false
 		})
+
+	// Prevent race conditions in Signal session encryption by user
+	const encryptionMutex = makeKeyedMutex()
 
 	let mediaConn: Promise<MediaConnInfo>
 	const refreshMediaConn = async (forceGet = false) => {
@@ -783,68 +787,103 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		let shouldIncludeDeviceIdentity = false
 		const meId = authState.creds.me!.id
-		const { user: meUser } = jidDecode(meId)!
 		const meLidUser = authState.creds.me?.lid ? jidDecode(authState.creds.me.lid)?.user : null
 
-		const nodes = await Promise.all(
-			patched.map(async patchedMessageWithJid => {
-				const { recipientJid: wireJid, ...patchedMessage } = patchedMessageWithJid
-				if (!wireJid) {
-					return {} as BinaryNode
-				}
+		// RACE CONDITION FIX: Group devices by user to prevent Signal session corruption
+		// Encrypt to all devices of same user sequentially, but different users in parallel
+		const devicesByUser = new Map<string, Array<{ recipientJid: string, patchedMessage: any }>>()
+		
+		for (const patchedMessageWithJid of patched) {
+			const { recipientJid: wireJid, ...patchedMessage } = patchedMessageWithJid
+			if (!wireJid) continue
+			
+			// Extract user from JID for grouping
+			const decoded = jidDecode(wireJid)
+			const user = decoded?.user
+			if (!user) continue
+			
+			if (!devicesByUser.has(user)) {
+				devicesByUser.set(user, [])
+			}
+			devicesByUser.get(user)!.push({ recipientJid: wireJid, patchedMessage })
+		}
 
-				// DSM logic: Use DSM for own other devices (following whatsmeow implementation)
-				let messageToEncrypt = patchedMessage
-				if (dsmMessage) {
-					const { user: targetUser } = jidDecode(wireJid)!
-					const { user: ownPnUser } = jidDecode(meId)!
-					const ownLidUser = meLidUser
-					
-					// Check if this is our device (same user, different device)
-					const isOwnUser = targetUser === ownPnUser || (ownLidUser && targetUser === ownLidUser)
-					
-					// Exclude exact sender device (whatsmeow: if jid == ownJID || jid == ownLID { continue })
-					const isExactSenderDevice = wireJid === meId || (authState.creds.me?.lid && wireJid === authState.creds.me.lid)
-					
-					if (isOwnUser && !isExactSenderDevice) {
-						messageToEncrypt = dsmMessage
-						console.log(`📱 Using DSM for own device: ${wireJid} (user: ${targetUser})`)
-					}
-				}
-
-				const bytes = encodeWAMessage(messageToEncrypt)
+		// Process each user's devices sequentially, but different users in parallel
+		const userEncryptionPromises = Array.from(devicesByUser.entries()).map(([user, userDevices]) => 
+			encryptionMutex.mutex(user, async () => {
+				logger.debug({ user, deviceCount: userDevices.length }, '🔒 Acquiring encryption lock for user devices')
 				
-				// WIRE JID: Determine encryption identity (following whatsmeow's approach)
-				let encryptionJid = wireJid
+				const userNodes: BinaryNode[] = []
 				
-				// SIMPLE: Just encrypt with the determined identity (like original)
-				const { type, ciphertext } = await signalRepository.encryptMessage({ 
-					jid: encryptionJid,  // Use LID if available, PN otherwise
-					data: bytes
-				})
-				
-				if (type === 'pkmsg') {
-					shouldIncludeDeviceIdentity = true
-				}
-
-				const node: BinaryNode = {
-					tag: 'to',
-					attrs: { jid: wireJid },  // Always use original wire identity in envelope
-					content: [
-						{
-							tag: 'enc',
-							attrs: {
-								v: '2',
-								type,
-								...(extraAttrs || {})
-							},
-							content: ciphertext
+				// Encrypt to this user's devices sequentially to prevent session corruption
+				for (const { recipientJid: wireJid, patchedMessage } of userDevices) {
+					// DSM logic: Use DSM for own other devices (following whatsmeow implementation)
+					let messageToEncrypt = patchedMessage
+					if (dsmMessage) {
+						const { user: targetUser } = jidDecode(wireJid)!
+						const { user: ownPnUser } = jidDecode(meId)!
+						const ownLidUser = meLidUser
+						
+						// Check if this is our device (same user, different device)
+						const isOwnUser = targetUser === ownPnUser || (ownLidUser && targetUser === ownLidUser)
+						
+						// Exclude exact sender device (whatsmeow: if jid == ownJID || jid == ownLID { continue })
+						const isExactSenderDevice = wireJid === meId || (authState.creds.me?.lid && wireJid === authState.creds.me.lid)
+						
+						if (isOwnUser && !isExactSenderDevice) {
+							messageToEncrypt = dsmMessage
+							logger.debug({ wireJid, targetUser }, '📱 Using DSM for own device')
 						}
-					]
+					}
+
+					const bytes = encodeWAMessage(messageToEncrypt)
+					
+					// WIRE JID: Determine encryption identity (following whatsmeow's approach)
+					let encryptionJid = wireJid
+					
+					// SEQUENTIAL ENCRYPTION: Encrypt with the determined identity
+					const { type, ciphertext } = await signalRepository.encryptMessage({ 
+						jid: encryptionJid,  // Use LID if available, PN otherwise
+						data: bytes
+					})
+					
+					if (type === 'pkmsg') {
+						shouldIncludeDeviceIdentity = true
+					}
+
+					const node: BinaryNode = {
+						tag: 'to',
+						attrs: { jid: wireJid },  // Always use original wire identity in envelope
+						content: [
+							{
+								tag: 'enc',
+								attrs: {
+									v: '2',
+									type,
+									...(extraAttrs || {})
+								},
+								content: ciphertext
+							}
+						]
+					}
+					userNodes.push(node)
 				}
-				return node
+				
+				logger.debug({ user, nodesCreated: userNodes.length }, '🔓 Releasing encryption lock for user devices')
+				return userNodes
 			})
 		)
+
+		// Wait for all users to complete (users are processed in parallel)
+		const userNodesArrays = await Promise.all(userEncryptionPromises)
+		const nodes = userNodesArrays.flat()
+
+		logger.debug({ 
+			totalDevices: jids.length, 
+			uniqueUsers: devicesByUser.size,
+			nodesCreated: nodes.length
+		}, '✅ Multi-user encryption completed with race condition protection')
+
 		return { nodes, shouldIncludeDeviceIdentity }
 	}
 

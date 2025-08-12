@@ -209,7 +209,7 @@ export const decryptMessageNode = (
 						switch (e2eType) {
 							case 'skmsg':
 								// Apply LID priority to group message author
-								const { addressingMode: groupAddressingMode, senderAlt: authorAlt } = extractAddressingContext(stanza, sender, author)
+								const { senderAlt: authorAlt } = extractAddressingContext(stanza, sender, author)
 								const { encryptionJid: authorEncryptionJid } = await determineLIDEncryptionJid(
 									author,
 									authorAlt,
