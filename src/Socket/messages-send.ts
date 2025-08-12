@@ -118,7 +118,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	const userDevicesCache =
 		config.userDevicesCache ||
-		new NodeCache<JidWithDevice[]>({
+		new NodeCache({
 			stdTTL: DEFAULT_CACHE_TTLS.USER_DEVICES, // 5 minutes
 			useClones: false
 		})
@@ -412,7 +412,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			logger.debug({ jid, user }, '📞 Processing PN address without LID mapping')
 			
 			if (useCache) {
-				const devices = userDevicesCache.get<JidWithDevice[]>(user!)
+				const devices = userDevicesCache.get(user!) as JidWithDevice[]
 				if (devices) {
 					// Convert cached devices to wire format
 					const devicesWithWire = devices.map(d => ({
@@ -481,7 +481,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	// Session recreation cache for whatsmeow pattern (separate from retry cache)
-	const sessionRecreateCache = new NodeCache<number>({ stdTTL: 60 * 60 }) // 1 hour TTL
+	const sessionRecreateCache = new NodeCache({ stdTTL: 60 * 60 }) // 1 hour TTL
 	
 	// Helper function for whatsmeow session recreation logic
 	const shouldRecreateSessionForRetry = async (retryCount: number, participant: string): Promise<{ recreate: boolean, reason: string }> => {
@@ -501,7 +501,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		
 		// Rate limiting: only recreate once per hour per participant (whatsmeow pattern)  
 		const sessionRecreateKey = `session-recreate:${participant}`
-		const lastRecreation = sessionRecreateCache.get(sessionRecreateKey)
+		const lastRecreation = sessionRecreateCache.get(sessionRecreateKey) as number
 		const oneHourAgo = Date.now() - (60 * 60 * 1000)
 		
 		if (!lastRecreation || lastRecreation < oneHourAgo) {

@@ -85,7 +85,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const msgRetryCache =
 		config.msgRetryCounterCache ||
-		new NodeCache<number>({
+		new NodeCache({
 			stdTTL: DEFAULT_CACHE_TTLS.MSG_RETRY, // 1 hour
 			useClones: false
 		})
@@ -95,7 +95,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const callOfferCache =
 		config.callOfferCache ||
-		new NodeCache<WACallEvent>({
+		new NodeCache({
 			stdTTL: DEFAULT_CACHE_TTLS.CALL_OFFER, // 5 mins
 			useClones: false
 		})
@@ -174,7 +174,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const msgId = msgKey.id!
 
 		const originalKey = `${msgId}:${msgKey?.participant}`
-		let retryCount = msgRetryCache.get<number>(originalKey) || 0
+		let retryCount = (msgRetryCache.get(originalKey) as number) || 0
 		let alternativeRetryAttempted = false
 		
 		// SMART LID/PN RETRY LOGIC - Try alternative addressing after 2 failed attempts  
@@ -186,7 +186,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				const lid = lidStore.getFromCache(msgKey.participant) // Use fast cache lookup
 				if (lid) {
 					const alternativeKey = `${msgId}:${lid}`
-					const altRetryCount = msgRetryCache.get<number>(alternativeKey) || 0
+					const altRetryCount = (msgRetryCache.get(alternativeKey) as number) || 0
 					if (altRetryCount < 2) {
 						logger.info({ 
 							msgId, 
@@ -204,7 +204,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				const pn = await lidStore.getPNForLID(msgKey.participant)
 				if (pn) {
 					const alternativeKey = `${msgId}:${pn}`
-					const altRetryCount = msgRetryCache.get<number>(alternativeKey) || 0
+					const altRetryCount = (msgRetryCache.get(alternativeKey) as number) || 0
 					if (altRetryCount < 2) {
 						logger.info({
 							msgId,
@@ -713,13 +713,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const willSendMessageAgain = (id: string, participant: string) => {
 		const key = `${id}:${participant}`
-		const retryCount = msgRetryCache.get<number>(key) || 0
+		const retryCount = (msgRetryCache.get(key) as number) || 0
 		return retryCount < maxMsgRetryCount
 	}
 
 	const updateSendMessageAgainCount = (id: string, participant: string) => {
 		const key = `${id}:${participant}`
-		const newValue = (msgRetryCache.get<number>(key) || 0) + 1
+		const newValue = ((msgRetryCache.get(key) as number) || 0) + 1
 		msgRetryCache.set(key, newValue)
 	}
 
@@ -1295,7 +1295,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			callOfferCache.set(call.id, call)
 		}
 
-		const existingCall = callOfferCache.get<WACallEvent>(call.id)
+		const existingCall = callOfferCache.get(call.id) as WACallEvent
 
 		// use existing call info to populate this event
 		if (existingCall) {
