@@ -394,10 +394,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							// DON'T create LID device here, DON'T skip PN processing
 							// Fall through to normal PN processing to maintain dual sessions like contacts
 						} else {
-							// For contact devices, fall back to PN when LID session missing
-							logger.warn({ lidForPN, contact: jid }, '❌ Contact has LID mapping but no LID session - falling back to PN session creation')
-							logger.info({ originalPN: jid }, '🔄 Falling back to PN session creation for contact without LID session')
-							// Don't continue here - fall through to normal PN processing
+							// For contact devices, prefer LID session creation when mapping exists
+							logger.info({ lidForPN, contact: jid }, '🔄 Contact has LID mapping but no LID session - will create LID session')
+							
+							// Add LID device for session creation (with correct device ID)
+							const actualDeviceId = originalDecoded?.device || 0
+							deviceResults.push({ 
+								user: lidUser!, 
+								device: actualDeviceId,
+								wireJid: jidEncode(lidUser!, 'lid', actualDeviceId)
+							})
+							
+							// Skip PN processing since we're creating LID session
+							logger.debug({ originalPN: jid, lidJid: lidForPN }, '✅ Added LID device for session creation instead of PN')
+							continue
 						}
 					}
 				}
