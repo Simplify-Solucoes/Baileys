@@ -11,7 +11,9 @@ import {
 	isJidStatusBroadcast,
 	isJidUser,
 	isLidUser,
-	jidDecode
+	jidDecode,
+	jidEncode,
+	jidNormalizedUser
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
 import type { ILogger } from './logger'
@@ -224,33 +226,57 @@ export const decryptMessageNode = (
 								break
 							case 'pkmsg':
 							case 'msg':
-								// SIMPLE & RELIABLE APPROACH: Decrypt directly with sender JID
-								// The sender encrypted with a specific session - use that exact session
-								// Do LID discovery AFTER successful decryption, not during
+								// WHATSMEOW PATTERN: Check for LID migration before decryption
+								// If sender has migrated to LID, use the LID session instead of PN
+								let decryptionJid = sender
 								
-								logger.debug({ sender, type: e2eType }, 'Decrypting directly with sender JID (no migration during decryption)')
+								// Check if sender is PN but has migrated to LID
+								if (sender.includes('@s.whatsapp.net')) {
+									try {
+										const lidMapping = repository.getLIDMappingStore()
+										const normalizedSender = jidNormalizedUser(sender)
+										const lidForPN = await lidMapping.getLIDForPN(normalizedSender)
+										
+										if (lidForPN && lidForPN.includes('@lid')) {
+											// Preserve device ID from original sender
+											const senderDecoded = jidDecode(sender)
+											const deviceId = senderDecoded?.device || 0
+											const lidWithDevice = jidEncode(jidDecode(lidForPN)!.user, 'lid', deviceId)
+											
+											// Check if LID session exists
+											const lidSessionExists = await repository.validateSession(lidWithDevice)
+											if (lidSessionExists.exists) {
+												decryptionJid = lidWithDevice
+												logger.debug({ originalSender: sender, migrationTarget: lidWithDevice }, '🔄 Using migrated LID session for decryption')
+											} else {
+												logger.debug({ sender, lidMapping: lidWithDevice }, '⚠️ LID mapping found but no LID session - using PN session')
+											}
+										}
+									} catch (error) {
+										logger.warn({ sender, error }, 'Failed to check LID migration during message decryption')
+									}
+								}
 								
-								// 1. DECRYPT FIRST - Use the exact sender JID that was used for encryption
+								logger.debug({ sender, decryptionJid, type: e2eType }, 'Decrypting message with determined JID')
+								
+								// DECRYPT with the determined JID (either original or migrated LID)
 								msgBuffer = await repository.decryptMessage({
-									jid: sender, // Use original sender JID - guaranteed to work
+									jid: decryptionJid,
 									type: e2eType,
 									ciphertext: content
 								})
 								
-								// 2. AFTER SUCCESSFUL DECRYPTION - Handle LID discovery/mapping
-								// This is safe because decryption already succeeded
+								// 2. AFTER SUCCESSFUL DECRYPTION - Handle LID mapping discovery from addressing context
+								// Store any new LID mapping discovered from the message envelope
 								const { senderAlt } = extractAddressingContext(stanza, sender)
 								
-								if (senderAlt && isLidUser(senderAlt) && isJidUser(sender)) {
-									// Store LID mapping for future use (not for this decryption)
-									const senderDecoded = jidDecode(sender)
-									const senderDevice = senderDecoded?.device || 0
-									
+								if (senderAlt && isLidUser(senderAlt) && isJidUser(sender) && decryptionJid === sender) {
+									// Only store mapping if we decrypted with PN (not already migrated)
 									try {
 										await repository.storeLIDPNMapping(senderAlt, sender)
-										logger.debug({ sender, senderAlt, device: senderDevice }, 'Stored LID mapping after successful decryption')
+										logger.debug({ sender, senderAlt }, 'Stored new LID mapping discovered from message envelope')
 									} catch (error) {
-										logger.error({ sender, senderAlt, error }, 'Failed to store LID mapping after decryption')
+										logger.error({ sender, senderAlt, error }, 'Failed to store LID mapping from envelope')
 									}
 								}
 								break
