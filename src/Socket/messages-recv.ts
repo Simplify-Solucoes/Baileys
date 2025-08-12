@@ -835,9 +835,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleReceipt = async (node: BinaryNode) => {
-		// Enhanced receipt logging with all important details
+		// Get the ACK status level from receipt type
+		const statusLevel = getStatusFromReceiptType(node.attrs.type)
+		const statusName = statusLevel !== undefined ? 
+			Object.keys(proto.WebMessageInfo.Status).find(key => 
+				proto.WebMessageInfo.Status[key as keyof typeof proto.WebMessageInfo.Status] === statusLevel
+			) : 'UNKNOWN'
+		
+		// Enhanced receipt logging with all important details including ACK level
 		logger.info({ 
-			receiptType: node.attrs.type,
+			receiptType: node.attrs.type || 'delivery',
+			ackLevel: statusLevel,
+			ackLevelName: statusName,
+			// ACK level meanings:
+			// 0 = ERROR
+			// 1 = PENDING 
+			// 2 = SERVER_ACK (sent to server)
+			// 3 = DELIVERY_ACK (delivered to recipient device)
+			// 4 = READ (read by recipient)
+			// 5 = PLAYED (voice/video message played)
 			from: node.attrs.from,
 			recipient: node.attrs.recipient,
 			participant: node.attrs.participant,
