@@ -1,14 +1,28 @@
-import { AxiosRequestConfig } from 'axios'
+import type { AxiosRequestConfig } from 'axios'
 import type { Readable } from 'stream'
 import type { URL } from 'url'
-import { proto } from '../../WAProto'
+import { proto } from '../../WAProto/index.js'
 import { MEDIA_HKDF_KEY_MAPPING } from '../Defaults'
-import { BinaryNode } from '../WABinary'
+import type { BinaryNode } from '../WABinary'
 import type { GroupMetadata } from './GroupMetadata'
-import { CacheStore } from './Socket'
+import type { CacheStore } from './Socket'
 
 // export the WAMessage Prototypes
 export { proto as WAProto }
+
+export type AddressingMode = 'pn' | 'lid'
+
+// MessageSource contains basic sender and chat information about a message
+export interface MessageSource {
+	chat: string      // The chat where the message was sent
+	sender: string    // The user who sent the message  
+	isFromMe: boolean // Whether the message was sent by the current user
+	isGroup: boolean  // Whether the chat is a group chat or broadcast list
+	
+	addressingMode?: AddressingMode // The addressing mode of the message (phone number or LID)
+	senderAlt?: string              // The alternative address of the user who sent the message
+	recipientAlt?: string           // The alternative address of the recipient (for DMs)
+}
 export type WAMessage = proto.IWebMessageInfo & { key: WAMessageKey }
 export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.Message.IContactMessage
@@ -32,12 +46,45 @@ export type WAGenericMediaMessage =
 	| proto.Message.IStickerMessage
 export const WAMessageStubType = proto.WebMessageInfo.StubType
 export const WAMessageStatus = proto.WebMessageInfo.Status
-import { ILogger } from '../Utils/logger'
+import type { ILogger } from '../Utils/logger'
 export type WAMediaPayloadURL = { url: URL | string }
 export type WAMediaPayloadStream = { stream: Readable }
 export type WAMediaUpload = Buffer | WAMediaPayloadStream | WAMediaPayloadURL
 /** Set of message types that are supported by the library */
 export type MessageType = keyof proto.Message
+
+export type MessageWithContextInfo =
+	| 'imageMessage'
+	| 'contactMessage'
+	| 'locationMessage'
+	| 'extendedTextMessage'
+	| 'documentMessage'
+	| 'audioMessage'
+	| 'videoMessage'
+	| 'call'
+	| 'contactsArrayMessage'
+	| 'liveLocationMessage'
+	| 'templateMessage'
+	| 'stickerMessage'
+	| 'groupInviteMessage'
+	| 'templateButtonReplyMessage'
+	| 'productMessage'
+	| 'listMessage'
+	| 'orderMessage'
+	| 'listResponseMessage'
+	| 'buttonsMessage'
+	| 'buttonsResponseMessage'
+	| 'interactiveMessage'
+	| 'interactiveResponseMessage'
+	| 'pollCreationMessage'
+	| 'requestPhoneNumberMessage'
+	| 'messageHistoryBundle'
+	| 'eventMessage'
+	| 'newsletterAdminInviteMessage'
+	| 'albumMessage'
+	| 'stickerPackMessage'
+	| 'pollResultSnapshotMessage'
+	| 'messageHistoryNotice'
 
 export type DownloadableMessage = { mediaKey?: Uint8Array | null; directPath?: string | null; url?: string | null }
 
@@ -150,6 +197,38 @@ export type ButtonReplyInfo = {
 	index: number
 }
 
+export type ListButtonReplyInfo = {
+	title: string
+	description?: string
+	rowId: string
+}
+
+export type InteractiveButtonReplyInfo = {
+	displayText: string
+	nativeFlows: {
+		name: string
+		paramsJson: string
+		version: number
+	}
+}
+
+export type ListSection = {
+	title: string
+	rows: {
+		title: string
+		rowId: string
+		description?: string
+	}[]
+}
+
+export type Button = {
+	buttonId: string
+	buttonText: {
+		displayText: string
+	}
+	type: number
+}
+
 export type GroupInviteInfo = {
 	inviteCode: string
 	inviteExpiration: number
@@ -189,6 +268,29 @@ export type AnyRegularMessageContent = (
 			buttonReply: ButtonReplyInfo
 			type: 'template' | 'plain'
 	  }
+		| {
+			buttonReply: ListButtonReplyInfo
+			type: 'list'
+	  }
+	| {
+			buttonReply: InteractiveButtonReplyInfo
+			type: 'interactive'
+	  }
+	| ({
+			text: string
+			title: string
+			buttonText: string
+			footer?: string
+			sections: ListSection[]
+	  } & Mentionable &
+			Contextable)
+	| ({
+			text: string
+			buttons: Button[]
+			footer?: string
+			title?: string
+	  } & Mentionable &
+			Contextable)
 	| {
 			groupInvite: GroupInviteInfo
 	  }
@@ -247,6 +349,8 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 	useUserDevicesCache?: boolean
 	/** jid list of participants for status@broadcast */
 	statusJidList?: string[]
+	/** specific devices to target for receipt timeout resends */
+	targetDevices?: string[]
 }
 
 export type MiscMessageGenerationOptions = MinimalRelayOptions & {

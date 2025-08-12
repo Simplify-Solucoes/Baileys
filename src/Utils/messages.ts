@@ -3,9 +3,9 @@ import axios from 'axios'
 import { randomBytes } from 'crypto'
 import { promises as fs } from 'fs'
 import { type Transform } from 'stream'
-import { proto } from '../../WAProto'
+import { proto } from '../../WAProto/index.js'
 import { MEDIA_KEYS, URL_REGEX, WA_DEFAULT_EPHEMERAL } from '../Defaults'
-import {
+import type {
 	AnyMediaMessageContent,
 	AnyMessageContent,
 	DownloadableMessage,
@@ -13,19 +13,18 @@ import {
 	MessageContentGenerationOptions,
 	MessageGenerationOptions,
 	MessageGenerationOptionsFromContent,
-	MessageType,
 	MessageUserReceipt,
+	MessageWithContextInfo,
 	WAMediaUpload,
 	WAMessage,
 	WAMessageContent,
-	WAMessageStatus,
-	WAProto,
 	WATextMessage
 } from '../Types'
+import { WAMessageStatus, WAProto } from '../Types'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary'
 import { sha256 } from './crypto'
 import { generateMessageIDV2, getKeyAuthor, unixTimestampSeconds } from './generics'
-import { ILogger } from './logger'
+import type { ILogger } from './logger'
 import {
 	downloadContentFromMessage,
 	encryptedStream,
@@ -33,7 +32,7 @@ import {
 	getAudioDuration,
 	getAudioWaveform,
 	getRawMediaUploadData,
-	MediaDownloadOptions
+	type MediaDownloadOptions
 } from './messages-media'
 
 type MediaUploadData = {
@@ -86,14 +85,14 @@ export const generateLinkPreviewIfRequired = async (
 		try {
 			const urlInfo = await getUrlInfo(url)
 			return urlInfo
-		} catch (error) {
+		} catch (error: any) {
 			// ignore if fails
 			logger?.warn({ trace: error.stack }, 'url generation failed')
 		}
 	}
 }
 
-const assertColor = async color => {
+const assertColor = async (color: any) => {
 	let assertedColor
 	if (typeof color === 'number') {
 		assertedColor = color > 0 ? color : 0xffffffff + Number(color) + 1
@@ -127,10 +126,10 @@ export const prepareWAMessageMedia = async (
 
 	const uploadData: MediaUploadData = {
 		...message,
-		media: message[mediaType]
+		media: (message as any)[mediaType]
 	}
-	delete uploadData[mediaType]
-
+	delete (uploadData as any)[mediaType]
+	// check if cacheable + generate cache key
 	const cacheableKey =
 		typeof uploadData.media === 'object' &&
 		'url' in uploadData.media &&
@@ -154,7 +153,7 @@ export const prepareWAMessageMedia = async (
 			const obj = WAProto.Message.decode(mediaBuff)
 			const key = `${mediaType}Message`
 
-			Object.assign(obj[key], { ...uploadData, media: undefined })
+			Object.assign(obj[key as keyof proto.Message]!, { ...uploadData, media: undefined })
 
 			return obj
 		}
@@ -179,7 +178,8 @@ export const prepareWAMessageMedia = async (
 		await fs.unlink(filePath)
 
 		const obj = WAProto.Message.fromObject({
-			[`${mediaType}Message`]: MessageTypeProto[mediaType].fromObject({
+			// todo: add more support here
+			[`${mediaType}Message`]: (MessageTypeProto as any)[mediaType].fromObject({
 				url: mediaUrl,
 				directPath,
 				fileSha256,
@@ -262,7 +262,7 @@ export const prepareWAMessageMedia = async (
 					logger?.debug('computed backgroundColor audio status')
 				}
 			} catch (error) {
-				logger?.warn({ trace: error.stack }, 'failed to obtain extra info')
+				logger?.warn({ trace: (error as any).stack }, 'failed to obtain extra info')
 			}
 		})()
 	]).finally(async () => {
@@ -279,7 +279,7 @@ export const prepareWAMessageMedia = async (
 	})
 
 	const obj = WAProto.Message.fromObject({
-		[`${mediaType}Message`]: MessageTypeProto[mediaType].fromObject({
+		[`${mediaType}Message`]: MessageTypeProto[mediaType as keyof typeof MessageTypeProto].fromObject({
 			url: mediaUrl,
 			directPath,
 			mediaKey,
@@ -335,9 +335,9 @@ export const generateForwardMessageContent = (message: WAMessage, forceForward?:
 	content = normalizeMessageContent(content)
 	content = proto.Message.decode(proto.Message.encode(content!).finish())
 
-	let key = Object.keys(content)[0] as MessageType
+	let key = Object.keys(content)[0] as keyof proto.IMessage
 
-	let score = content[key].contextInfo?.forwardingScore || 0
+	let score = (content?.[key] as { contextInfo: proto.IContextInfo })?.contextInfo?.forwardingScore || 0
 	score += message.key.fromMe && !forceForward ? 0 : 1
 	if (key === 'conversation') {
 		content.extendedTextMessage = { text: content[key] }
@@ -346,10 +346,11 @@ export const generateForwardMessageContent = (message: WAMessage, forceForward?:
 		key = 'extendedTextMessage'
 	}
 
+	const key_ = content?.[key] as { contextInfo: proto.IContextInfo }
 	if (score > 0) {
-		content[key].contextInfo = { forwardingScore: score, isForwarded: true }
+		key_.contextInfo = { forwardingScore: score, isForwarded: true }
 	} else {
-		content[key].contextInfo = {}
+		key_.contextInfo = {}
 	}
 
 	return content
@@ -360,10 +361,10 @@ export const generateWAMessageContent = async (
 	options: MessageContentGenerationOptions
 ) => {
 	let m: WAMessageContent = {}
-	if ('text' in message) {
+	if ('text' in message && !('sections' in message) && !('buttons' in message)) {
 		const extContent = { text: message.text } as WATextMessage
 
-		let urlInfo = message.linkPreview
+		let urlInfo = 'linkPreview' in message ? message.linkPreview : undefined		
 		if (typeof urlInfo === 'undefined') {
 			urlInfo = await generateLinkPreviewIfRequired(message.text, options.getUrlInfo, options.logger)
 		}
@@ -403,7 +404,7 @@ export const generateWAMessageContent = async (
 		}
 
 		if (contactLen === 1) {
-			m.contactMessage = WAProto.Message.ContactMessage.fromObject(message.contacts.contacts[0])
+			m.contactMessage = WAProto.Message.ContactMessage.fromObject(message.contacts.contacts[0]!)
 		} else {
 			m.contactsArrayMessage = WAProto.Message.ContactsArrayMessage.fromObject(message.contacts)
 		}
@@ -460,6 +461,16 @@ export const generateWAMessageContent = async (
 		m.messageContextInfo.messageAddOnDurationInSecs = message.type === 1 ? message.time || 86400 : 0
 	} else if ('buttonReply' in message) {
 		switch (message.type) {
+			case 'list':
+				m.listResponseMessage = {
+					title: message.buttonReply.title,
+					description: message.buttonReply.description,
+					singleSelectReply: {
+						selectedRowId: message.buttonReply.rowId
+					},
+					listType: proto.Message.ListResponseMessage.ListType.SINGLE_SELECT
+				}
+				break
 			case 'template':
 				m.templateButtonReplyMessage = {
 					selectedDisplayText: message.buttonReply.displayText,
@@ -472,6 +483,19 @@ export const generateWAMessageContent = async (
 					selectedButtonId: message.buttonReply.id,
 					selectedDisplayText: message.buttonReply.displayText,
 					type: proto.Message.ButtonsResponseMessage.Type.DISPLAY_TEXT
+				}
+				break
+			case 'interactive':
+				m.interactiveResponseMessage = {
+					body: {
+						text: message.buttonReply.displayText,
+						format: proto.Message.InteractiveResponseMessage.Body.Format.EXTENSIONS_1
+					},
+					nativeFlowResponseMessage: {
+						name: message.buttonReply.nativeFlows.name,
+						paramsJson: message.buttonReply.nativeFlows.paramsJson,
+						version: message.buttonReply.nativeFlows.version
+					}
 				}
 				break
 		}
@@ -532,6 +556,8 @@ export const generateWAMessageContent = async (
 		}
 	} else if ('requestPhoneNumber' in message) {
 		m.requestPhoneNumberMessage = {}
+	} else if ('sections' in message || 'buttons' in message) {
+		// These are handled later in the function
 	} else {
 		m = await prepareWAMessageMedia(message, options)
 	}
@@ -541,9 +567,15 @@ export const generateWAMessageContent = async (
 	}
 
 	if ('mentions' in message && message.mentions?.length) {
-		const [messageType] = Object.keys(m)
-		m[messageType].contextInfo = m[messageType] || {}
-		m[messageType].contextInfo.mentionedJid = message.mentions
+		const messageType = Object.keys(m)[0]! as Extract<keyof proto.IMessage, MessageWithContextInfo>
+		const key = m[messageType]
+		if ('contextInfo' in key! && !!key.contextInfo) {
+			key.contextInfo.mentionedJid = message.mentions
+		} else if (key!) {
+			key.contextInfo = {
+				mentionedJid: message.mentions
+			}
+		}
 	}
 
 	if ('edit' in message) {
@@ -555,12 +587,70 @@ export const generateWAMessageContent = async (
 				type: WAProto.Message.ProtocolMessage.Type.MESSAGE_EDIT
 			}
 		}
+	} else if ('buttons' in message && !!(message as any).buttons) {
+		const buttonsMessage: any = {
+			buttons: (message as any).buttons.map((b: any) => ({
+				...b,
+				type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
+			}))
+		}
+
+		if ('text' in message) {
+			buttonsMessage.contentText = message.text
+			buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.EMPTY
+		} else {
+			if ('caption' in message) {
+				buttonsMessage.contentText = (message as any).caption
+			}
+
+			const type = Object.keys(m)[0]?.replace('Message', '').toUpperCase()
+			buttonsMessage.headerType =
+				proto.Message.ButtonsMessage.HeaderType[type as keyof typeof proto.Message.ButtonsMessage.HeaderType]
+
+			Object.assign(buttonsMessage, m)
+		}
+
+		if ('footer' in message && !!(message as any).footer) {
+			buttonsMessage.footerText = (message as any).footer
+		}
+
+		if ('title' in message && !!(message as any).title) {
+			buttonsMessage.text = (message as any).title
+			buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.TEXT
+		}
+
+		buttonsMessage.contextInfo = {
+			...((message as any).contextInfo || {}),
+			...((message as any).mentions ? { mentionedJid: (message as any).mentions } : {})
+		}
+
+		m = { buttonsMessage: WAProto.Message.ButtonsMessage.fromObject(buttonsMessage) }
+	}
+
+	if ('sections' in message && !!message.sections) {
+		const listMessage: any = {
+			title: message.title,
+			buttonText: message.buttonText,
+			footerText: message.footer,
+			description: message.text,
+			sections: message.sections,
+			listType: proto.Message.ListMessage.ListType.SINGLE_SELECT
+		}
+
+		listMessage.contextInfo = {
+			...((message as any).contextInfo || {}),
+			...((message as any).mentions ? { mentionedJid: (message as any).mentions } : {})
+		}
+
+		m = { listMessage: WAProto.Message.ListMessage.fromObject(listMessage) }
 	}
 
 	if ('contextInfo' in message && !!message.contextInfo) {
-		const [messageType] = Object.keys(m)
-		m[messageType] = m[messageType] || {}
-		m[messageType].contextInfo = message.contextInfo
+		const messageType = Object.keys(m)[0]! as Exclude<keyof proto.IMessage, 'conversation'>
+		const key = m[messageType]
+		if ('contextInfo' in key!) {
+			key.contextInfo = { ...key.contextInfo, ...message.contextInfo }
+		}
 	}
 
 	return WAProto.Message.fromObject(m)
@@ -578,7 +668,7 @@ export const generateWAMessageFromContent = (
 	}
 
 	const innerMessage = normalizeMessageContent(message)!
-	const key: string = getContentType(innerMessage)!
+	const key = getContentType(innerMessage)! as Exclude<keyof proto.IMessage, 'conversation'>
 	const timestamp = unixTimestampSeconds(options.timestamp)
 	const { quoted, userJid } = options
 
@@ -597,7 +687,8 @@ export const generateWAMessageFromContent = (
 			delete quotedContent.contextInfo
 		}
 
-		const contextInfo: proto.IContextInfo = innerMessage[key].contextInfo || {}
+		const contextInfo: proto.IContextInfo =
+			('contextInfo' in innerMessage[key]! && innerMessage[key]?.contextInfo) || {}
 		contextInfo.participant = jidNormalizedUser(participant!)
 		contextInfo.stanzaId = quoted.key.id
 		contextInfo.quotedMessage = quotedMsg
@@ -608,7 +699,10 @@ export const generateWAMessageFromContent = (
 			contextInfo.remoteJid = quoted.key.remoteJid
 		}
 
-		innerMessage[key].contextInfo = contextInfo
+		if (contextInfo && innerMessage[key]) {
+			/* @ts-ignore */
+			innerMessage[key].contextInfo = contextInfo
+		}
 	}
 
 	if (
@@ -621,8 +715,9 @@ export const generateWAMessageFromContent = (
 		// newsletters don't support ephemeral messages
 		!isJidNewsletter(jid)
 	) {
+		/* @ts-ignore */
 		innerMessage[key].contextInfo = {
-			...(innerMessage[key].contextInfo || {}),
+			...((innerMessage[key] as any).contextInfo || {}),
 			expiration: options.ephemeralExpiration || WA_DEFAULT_EPHEMERAL
 			//ephemeralSettingTimestamp: options.ephemeralOptions.eph_setting_ts?.toString()
 		}
@@ -837,7 +932,7 @@ export function getAggregateVotesInPollMessage(
 				data = voteHashMap[hash]
 			}
 
-			voteHashMap[hash].voters.push(getKeyAuthor(update.pollUpdateMessageKey, meId))
+			voteHashMap[hash]!.voters.push(getKeyAuthor(update.pollUpdateMessageKey, meId))
 		}
 	}
 
@@ -952,4 +1047,30 @@ export const assertMediaContent = (content: proto.IMessage | null | undefined) =
 	}
 
 	return mediaContent
+}
+
+/**
+ * this is an experimental patch to make buttons work
+ * Don't know how it works, but it does for now
+ */
+export const patchMessageForMdIfRequired = (message: proto.IMessage) => {
+	if (
+		message?.buttonsMessage ||
+		message?.templateMessage ||
+		message?.listMessage ||
+		message?.interactiveMessage?.nativeFlowMessage
+	) {
+		message = {
+			viewOnceMessageV2Extension: {
+				message: {
+					messageContextInfo: {
+						deviceListMetadataVersion: 2,
+						deviceListMetadata: {}
+					},
+					...message
+				}
+			}
+		}
+	}
+	return message
 }

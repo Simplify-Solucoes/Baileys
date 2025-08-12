@@ -1,22 +1,52 @@
 import { Boom } from '@hapi/boom'
-import { proto } from '../../WAProto'
-import { SignalRepository, WAMessage, WAMessageKey } from '../Types'
+import { proto } from '../../WAProto/index.js'
+import type { SignalRepository, WAMessage, WAMessageKey, AddressingMode } from '../Types'
 import {
 	areJidsSameUser,
-	BinaryNode,
+	type BinaryNode,
 	isJidBroadcast,
 	isJidGroup,
 	isJidMetaIa,
 	isJidNewsletter,
 	isJidStatusBroadcast,
 	isJidUser,
-	isLidUser
+	isLidUser,
+	jidDecode,
+	jidEncode,
+	jidNormalizedUser
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
-import { ILogger } from './logger'
+import type { ILogger } from './logger'
+import { determineLIDEncryptionJid } from './decode-wa-message-lid'
 
 export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
 export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled'
+
+/**
+ * Extract addressing mode and alternative identities from message stanza
+ * Following whatsmeow's approach in message.go:79-92
+ */
+export const extractAddressingContext = (stanza: BinaryNode, _from: string, _participant?: string) => {
+	const addressingMode = (stanza.attrs.addressing_mode as AddressingMode) || 'pn'
+	let senderAlt: string | undefined
+	let recipientAlt: string | undefined
+	
+	if (addressingMode === 'lid') {
+		// Message is LID-addressed: sender is LID, extract corresponding PN
+		senderAlt = stanza.attrs.participant_pn || stanza.attrs.sender_pn
+		recipientAlt = stanza.attrs.recipient_pn
+	} else {
+		// Message is PN-addressed: sender is PN, extract corresponding LID
+		senderAlt = stanza.attrs.participant_lid || stanza.attrs.sender_lid
+		recipientAlt = stanza.attrs.recipient_lid
+	}
+	
+	return {
+		addressingMode,
+		senderAlt,
+		recipientAlt
+	}
+}
 
 export const NACK_REASONS = {
 	ParsingError: 487,
@@ -62,17 +92,17 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 
 	if (isJidUser(from) || isLidUser(from)) {
 		if (recipient && !isJidMetaIa(recipient)) {
-			if (!isMe(from) && !isMeLid(from)) {
+			if (!isMe(from!) && !isMeLid(from!)) {
 				throw new Boom('receipient present, but msg not from me', { data: stanza })
 			}
 
 			chatId = recipient
 		} else {
-			chatId = from
+			chatId = from!
 		}
 
 		msgType = 'chat'
-		author = from
+		author = from!
 	} else if (isJidGroup(from)) {
 		if (!participant) {
 			throw new Boom('No participant in group message')
@@ -80,38 +110,38 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 
 		msgType = 'group'
 		author = participant
-		chatId = from
+		chatId = from!
 	} else if (isJidBroadcast(from)) {
 		if (!participant) {
 			throw new Boom('No participant in group message')
 		}
 
 		const isParticipantMe = isMe(participant)
-		if (isJidStatusBroadcast(from)) {
+		if (isJidStatusBroadcast(from!)) {
 			msgType = isParticipantMe ? 'direct_peer_status' : 'other_status'
 		} else {
 			msgType = isParticipantMe ? 'peer_broadcast' : 'other_broadcast'
 		}
 
-		chatId = from
+		chatId = from!
 		author = participant
 	} else if (isJidNewsletter(from)) {
 		msgType = 'newsletter'
-		chatId = from
-		author = from
+		chatId = from!
+		author = from!
 	} else {
 		throw new Boom('Unknown message type', { data: stanza })
 	}
 
-	const fromMe = (isLidUser(from) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from)
+	const fromMe = (isLidUser(from) ? isMeLid : isMe)((stanza.attrs.participant || stanza.attrs.from)!)
 	const pushname = stanza?.attrs?.notify
 
 	const key: WAMessageKey = {
 		remoteJid: chatId,
 		fromMe,
 		id: msgId,
-		senderLid: stanza?.attrs?.sender_lid,
-		senderPn: stanza?.attrs?.sender_pn,
+		senderLid: stanza?.attrs?.sender_lid || stanza?.attrs?.peer_recipient_lid,
+		senderPn: stanza?.attrs?.sender_pn  || stanza?.attrs?.peer_recipient_pn,
 		participant,
 		participantPn: stanza?.attrs?.participant_pn,
 		participantLid: stanza?.attrs?.participant_lid,
@@ -120,7 +150,7 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 
 	const fullMessage: WAMessage = {
 		key,
-		messageTimestamp: +stanza.attrs.t,
+		messageTimestamp: +stanza.attrs.t!,
 		pushName: pushname,
 		broadcast: isJidBroadcast(from)
 	}
@@ -178,20 +208,77 @@ export const decryptMessageNode = (
 						const e2eType = tag === 'plaintext' ? 'plaintext' : attrs.type
 						switch (e2eType) {
 							case 'skmsg':
+								// Apply LID priority to group message author
+								const { senderAlt: authorAlt } = extractAddressingContext(stanza, sender, author)
+								const { encryptionJid: authorEncryptionJid } = await determineLIDEncryptionJid(
+									author,
+									authorAlt,
+									repository,
+									logger,
+									meId
+								)
+								
 								msgBuffer = await repository.decryptGroupMessage({
 									group: sender,
-									authorJid: author,
+									authorJid: authorEncryptionJid,
 									msg: content
 								})
 								break
 							case 'pkmsg':
 							case 'msg':
-								const user = isJidUser(sender) ? sender : author
+								// WHATSMEOW PATTERN: Check for LID migration before decryption
+								// If sender has migrated to LID, use the LID session instead of PN
+								let decryptionJid = sender
+								
+								// Check if sender is PN but has migrated to LID
+								if (sender.includes('@s.whatsapp.net')) {
+									try {
+										const lidMapping = repository.getLIDMappingStore()
+										const normalizedSender = jidNormalizedUser(sender)
+										const lidForPN = await lidMapping.getLIDForPN(normalizedSender)
+										
+										if (lidForPN && lidForPN.includes('@lid')) {
+											// Preserve device ID from original sender
+											const senderDecoded = jidDecode(sender)
+											const deviceId = senderDecoded?.device || 0
+											const lidWithDevice = jidEncode(jidDecode(lidForPN)!.user, 'lid', deviceId)
+											
+											// Check if LID session exists
+											const lidSessionExists = await repository.validateSession(lidWithDevice)
+											if (lidSessionExists.exists) {
+												decryptionJid = lidWithDevice
+												logger.debug({ originalSender: sender, migrationTarget: lidWithDevice }, '🔄 Using migrated LID session for decryption')
+											} else {
+												logger.debug({ sender, lidMapping: lidWithDevice }, '⚠️ LID mapping found but no LID session - using PN session')
+											}
+										}
+									} catch (error) {
+										logger.warn({ sender, error }, 'Failed to check LID migration during message decryption')
+									}
+								}
+								
+								logger.debug({ sender, decryptionJid, type: e2eType }, 'Decrypting message with determined JID')
+								
+								// DECRYPT with the determined JID (either original or migrated LID)
 								msgBuffer = await repository.decryptMessage({
-									jid: user,
+									jid: decryptionJid,
 									type: e2eType,
 									ciphertext: content
 								})
+								
+								// 2. AFTER SUCCESSFUL DECRYPTION - Handle LID mapping discovery from addressing context
+								// Store any new LID mapping discovered from the message envelope
+								const { senderAlt } = extractAddressingContext(stanza, sender)
+								
+								if (senderAlt && isLidUser(senderAlt) && isJidUser(sender) && decryptionJid === sender) {
+									// Only store mapping if we decrypted with PN (not already migrated)
+									try {
+										await repository.storeLIDPNMapping(senderAlt, sender)
+										logger.debug({ sender, senderAlt }, 'Stored new LID mapping discovered from message envelope')
+									} catch (error) {
+										logger.error({ sender, senderAlt, error }, 'Failed to store LID mapping from envelope')
+									}
+								}
 								break
 							case 'plaintext':
 								msgBuffer = content
@@ -221,7 +308,7 @@ export const decryptMessageNode = (
 						} else {
 							fullMessage.message = msg
 						}
-					} catch (err) {
+					} catch (err: any) {
 						logger.error({ key: fullMessage.key, err }, 'failed to decrypt message')
 						fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
 						fullMessage.messageStubParameters = [err.message]

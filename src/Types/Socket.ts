@@ -1,12 +1,12 @@
-import { AxiosRequestConfig } from 'axios'
+import type { AxiosRequestConfig } from 'axios'
 import type { Agent } from 'https'
 import type { URL } from 'url'
-import { proto } from '../../WAProto'
-import { ILogger } from '../Utils/logger'
-import { AuthenticationState, SignalAuthState, TransactionCapabilityOptions } from './Auth'
-import { GroupMetadata } from './GroupMetadata'
-import { MediaConnInfo } from './Message'
-import { SignalRepository } from './Signal'
+import { proto } from '../../WAProto/index.js'
+import type { ILogger } from '../Utils/logger'
+import type { AuthenticationState, SignalAuthState, TransactionCapabilityOptions } from './Auth'
+import type { GroupMetadata } from './GroupMetadata'
+import { type MediaConnInfo } from './Message'
+import type { SignalRepository } from './Signal'
 
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
@@ -121,12 +121,16 @@ export type SocketConfig = {
 
 	/** options for axios */
 	options: AxiosRequestConfig<{}>
-	/**
-	 * fetch a message from your store
-	 * implement this so that messages failed to send
-	 * (solves the "this message can take a while" issue) can be retried
-	 * */
-	getMessage: (key: proto.IMessageKey) => Promise<proto.IMessage | undefined>
+	
+	/** Built-in message cache configuration - handles both recent message retrieval and retry support */
+	messageCacheConfig?: {
+		/** Maximum number of messages to cache (default: 256, following WhatsmeOW) */
+		maxSize?: number
+		/** TTL for cached messages in milliseconds (default: 24 hours) */
+		ttlMs?: number
+		/** Whether to enable cache statistics logging (default: true) */
+		enableStats?: boolean
+	}
 
 	/** cached group metadata, use to prevent redundant requests to WA & speed up msg sending */
 	cachedGroupMetadata: (jid: string) => Promise<GroupMetadata | undefined>
