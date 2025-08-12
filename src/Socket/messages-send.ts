@@ -622,50 +622,53 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				let jidToFetch = jid // Default to original JID
 				if (!hasSession && jid.includes('@s.whatsapp.net')) {
 					try {
-						logger.debug({ jid }, 'Checking for LID mapping before creating PN session')
-						const lidForPN = await lidMapping.getLIDForPN(jid)
-						logger.debug({ jid, lidForPN }, 'LID mapping lookup result')
+						// CRITICAL: Normalize JID to user level for LID mapping lookup
+						const normalizedJid = jidNormalizedUser(jid)
+						logger.debug({ originalJid: jid, normalizedJid }, 'Checking for LID mapping before creating PN session')
+						const lidForPN = await lidMapping.getLIDForPN(normalizedJid)
+						logger.debug({ jid, normalizedJid, lidForPN }, 'LID mapping lookup result')
 						
 						if (lidForPN && lidForPN.includes('@lid')) {
-							// Check if LID session exists
-							const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
+							// CRITICAL: Preserve device ID from original JID
+							const originalDecoded = jidDecode(jid)
+							const actualDeviceId = originalDecoded?.device || 0
+							const lidDecoded = jidDecode(lidForPN)
+							const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', actualDeviceId)
+							
+							// Check if LID session exists (with correct device ID)
+							const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidWithDevice)
 							const lidSessions = await authState.keys.get('session', [lidSignalId])
 							hasSession = !!lidSessions[lidSignalId]
 							
 							if (hasSession) {
-								logger.info({ jid, lidForPN }, '✅ Found migrated LID session, skipping PN fetch')
+								logger.info({ jid, lidForPN: lidWithDevice, actualDeviceId }, '✅ Found migrated LID session, skipping PN fetch')
 							} else {
 								// CRITICAL FIX: Check if this is our own device vs contact device
 								const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
-								const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
+								const isOwnDevice = jidNormalizedUser(normalizedJid) === currentUserJid
 								
 								if (isOwnDevice) {
 									// CRITICAL FIX: For own devices, create BOTH PN and LID sessions
 									// This maintains dual session availability like contacts
-									const originalDecoded = jidDecode(jid)
-									const actualDeviceId = originalDecoded?.device || 0
-									const lidDecoded = jidDecode(lidForPN)
-									const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', actualDeviceId)
+									logger.info({ jid, lidForPN: lidWithDevice, currentUser: currentUserJid, actualDeviceId }, '🔄 Own device: creating BOTH PN and LID sessions')
 									
-									logger.info({ jid, lidForPN, lidWithDevice, currentUser: currentUserJid, actualDeviceId }, '🔄 Own device: creating BOTH PN and LID sessions')
-									
-									// Add both PN and LID to fetch list
+									// Add both PN and LID to fetch list (only if not already added)
 									if (!jidsRequiringFetch.includes(jid)) {
 										jidsRequiringFetch.push(jid) // Original PN address
 										logger.debug({ originalJid: jid }, 'Adding PN address to fetch list for own device')
 									}
 									if (!jidsRequiringFetch.includes(lidWithDevice)) {
-										jidsRequiringFetch.push(lidWithDevice) // LID address
+										jidsRequiringFetch.push(lidWithDevice) // LID address with correct device ID
 										logger.debug({ lidJid: lidWithDevice }, 'Adding LID address to fetch list for own device')
 									}
 									
 									// Skip setting jidToFetch since we already added both to the fetch list
 									continue
 								} else {
-									// For contact devices, fall back to PN when LID session missing
-									logger.warn({ jid, lidForPN, contact: jid }, '❌ Contact has LID mapping but no LID session - falling back to PN session creation')
-									// Keep jidToFetch as original PN jid to create PN session instead
-									hasSession = false // Ensure PN session creation continues
+									// For contact devices, prefer LID session creation when mapping exists
+									logger.info({ jid, lidForPN: lidWithDevice, contact: normalizedJid }, '🔄 Contact has LID mapping - preferring LID session creation')
+									jidToFetch = lidWithDevice // Use LID address with correct device ID
+									hasSession = false // Ensure session creation continues
 								}
 							}
 						} else {
@@ -1135,18 +1138,29 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							reason: 'receipt_timeout_resend'
 						}, 'Sending to specific devices due to missing receipts')
 					} else {
-						// Normal device resolution
-						// These are placeholder entries that will be replaced by actual device enumeration
+						// Normal device resolution with proper addressing consistency
+						// Determine the addressing mode based on target sessions
+						const hasLidSession = targetSessions.some(session => session.includes('@lid'))
+						const hasPnSession = targetSessions.some(session => session.includes('@s.whatsapp.net'))
+						
+						// Create placeholder entries for target user
+						const targetUserServer = hasLidSession ? 'lid' : 's.whatsapp.net'
 						devices.push({ 
 							user, 
 							device: 0,
-							wireJid: jidEncode(user, user.includes('_') ? 'lid' : 's.whatsapp.net', 0)
+							wireJid: jidEncode(user, targetUserServer, 0)
 						})
+						
+						// Create placeholder entries for own user with proper addressing consistency
 						if (user !== ownUser) {
+							// If target has LID and we have LID capability, use LID for own devices too
+							const ownUserServer = (hasLidSession && meLid) ? 'lid' : 's.whatsapp.net'
+							const ownUserForAddressing = (hasLidSession && meLid) ? jidDecode(meLid)!.user : ownUser
+							
 							devices.push({ 
-								user: ownUser, 
+								user: ownUserForAddressing, 
 								device: 0,
-								wireJid: jidEncode(ownUser, 's.whatsapp.net', 0)
+								wireJid: jidEncode(ownUserForAddressing, ownUserServer, 0)
 							})
 						}
 
@@ -1176,18 +1190,35 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								}, 'Session-specific device enumeration for consistent addressing')
 								
 								// Enumerate devices for this specific session pair
-								// DISABLE AUTO-MIGRATION: We want to preserve exact session types for consistency  
-								const sessionDevices = await getUSyncDevices([senderIdentity, targetSession], false, false, true)
+								// MULTI-SESSION MODE: Enable enumeration for both session types
+								const sessionDevices = await getUSyncDevices([senderIdentity, targetSession], false, false, false)
 								
-								// Add devices with session context
-								devices.push(...sessionDevices.map(device => ({
-									...device,
-									sessionContext: {
-										targetSession,
-										senderIdentity,
-										addressingMode: targetIsLid ? 'lid' as const : 'pn' as const
+								// Add devices with session context - ensure proper wire JID format
+								const devicesWithContext = sessionDevices.map(device => {
+									// Ensure wireJid matches the session addressing mode
+									let correctedWireJid = device.wireJid
+									
+									// If this is for a LID target session, ensure LID devices use LID wire format
+									if (targetIsLid && device.wireJid.includes('@s.whatsapp.net')) {
+										correctedWireJid = jidEncode(device.user, 'lid', device.device)
 									}
-								})))
+									// If this is for a PN target session, ensure PN devices use PN wire format  
+									else if (!targetIsLid && device.wireJid.includes('@lid')) {
+										correctedWireJid = jidEncode(device.user, 's.whatsapp.net', device.device)
+									}
+									
+									return {
+										...device,
+										wireJid: correctedWireJid,
+										sessionContext: {
+											targetSession,
+											senderIdentity,
+											addressingMode: targetIsLid ? 'lid' as const : 'pn' as const
+										}
+									}
+								})
+								
+								devices.push(...devicesWithContext)
 							}
 							
 							// Remove duplicates while preserving session context
