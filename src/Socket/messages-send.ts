@@ -324,6 +324,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Normal PN processing - WHATSMEOW PATTERN: Check for LID mapping first (LID priority)
 			jid = jidNormalizedUser(jid)
 			
+			// CRITICAL FIX: Check if this is our own device FIRST to disable auto-migration
+			const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
+			const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
+			
+			// For own devices, disable auto-migration to prevent ratchet corruption
+			if (isOwnDevice) {
+				disableAutoMigration = true
+				logger.info({ jid, currentUser: currentUserJid }, '🔄 Own device detected: disabling auto-migration to preserve ratchet independence')
+			}
+			
 			// Check if this is an explicit PN device JID
 			const originalDecoded = jidDecode(jid)
 			const originalDevice = originalDecoded?.device
@@ -342,7 +352,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			
 			// WHATSMEOW EXACT: Automatic PN→LID migration when LID mapping exists
 			// Even if user typed a phone number, prefer LID when available
-			// BUT: Skip auto-migration if we're doing intentional multi-session delivery
+			// BUT: Skip auto-migration if we're doing intentional multi-session delivery OR for own devices
 			if (!disableAutoMigration) {
 				try {
 					const lidMapping = signalRepository.getLIDMappingStore()
@@ -525,13 +535,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		
 		// Second pass: filter out PN versions if LID exists
 		for (const jid of jids) {
-			if (jid.includes('@s.whatsapp.net')) {
-				const user = jidDecode(jid)?.user
-				if (user && lidUsers.has(user)) {
-					logger.debug({ jid, lidUser: user }, '🚫 assertSessions: Skipping PN version - LID version exists')
-					continue // Skip PN version when LID exists
-				}
-			}
+			// if (jid.includes('@s.whatsapp.net')) {
+			// 	const user = jidDecode(jid)?.user
+			// 	// if (user && lidUsers.has(user)) {
+			// 	// 	logger.debug({ jid, lidUser: user }, '🚫 assertSessions: Skipping PN version - LID version exists')
+			// 	// 	continue // Skip PN version when LID exists
+			// 	// }
+			// }
 			filteredJids.push(jid)
 		}
 		
