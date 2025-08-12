@@ -309,16 +309,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						wireJid: jid // Preserve exact JID format
 					})
 				} else {
-					// This is a user JID - would need device enumeration, but since it's LID
-					// and we don't do server queries for LID, just use device 0
-					logger.debug({ jid }, 'Processing LID user JID - using device 0')
-					deviceResults.push({ 
-						user: user!, 
-						device: 0,
-						wireJid: jidEncode(user!, 'lid', 0) // Construct LID device JID
-					})
+					// This is a user JID - add to enumeration list for device discovery
+					logger.debug({ jid }, '📋 Adding LID user JID to enumeration list')
+					toFetch.push(jid)
 				}
-				continue // Skip normal processing for LID addresses
+				continue // Skip normal PN-specific processing for LID addresses
 			}
 			
 			// Normal PN processing - WHATSMEOW PATTERN: Check for LID mapping first (LID priority)
@@ -818,32 +813,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				
 				// WIRE JID: Determine encryption identity (following whatsmeow's approach)
 				let encryptionJid = wireJid
-				// if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
-				// 	try {
-				// 		const lidStore = signalRepository.getLIDMappingStore()
-				// 		const lidForPN = await lidStore.getLIDForPN(wireJid)
-						
-				// 		// if (lidForPN && lidForPN.includes('@lid')) {
-				// 		// 	// CRITICAL FIX: Only use LID for encryption if we already have a LID session
-				// 		// 	// DO NOT migrate sessions during message sending - only during receiving
-				// 		// 	const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
-				// 		// 	const lidSessions = await authState.keys.get('session', [lidSignalId])
-				// 		// 	const hasLIDSession = !!lidSessions[lidSignalId]
-							
-				// 		// 	// if (hasLIDSession) {
-				// 		// 	// 	// We have LID session - use it for encryption
-				// 		// 	// 	encryptionJid = lidForPN
-				// 		// 	// 	console.log(`🔄 Using existing LID session for encryption: ${wireJid} → ${lidForPN}`)
-				// 		// 	// } else {
-				// 		// 	// 	// NO LID session - stick with PN for encryption
-				// 		// 	// 	// Migration should only happen during message decryption, not sending
-				// 		// 	// 	console.log(`🔄 No LID session found - using PN for encryption: ${wireJid}`)
-				// 		// 	// }
-				// 		// }
-				// 	} catch (error) {
-				// 		console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)
-				// 	}
-				// }
 				
 				// SIMPLE: Just encrypt with the determined identity (like original)
 				const { type, ciphertext } = await signalRepository.encryptMessage({ 
