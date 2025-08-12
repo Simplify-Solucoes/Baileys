@@ -642,14 +642,27 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
 								
 								if (isOwnDevice) {
-									// For own devices, use LID session creation even if it doesn't exist yet
-									// CRITICAL FIX: Preserve device ID when creating LID session
+									// CRITICAL FIX: For own devices, create BOTH PN and LID sessions
+									// This maintains dual session availability like contacts
 									const originalDecoded = jidDecode(jid)
 									const actualDeviceId = originalDecoded?.device || 0
 									const lidDecoded = jidDecode(lidForPN)
 									const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', actualDeviceId)
-									logger.info({ jid, lidForPN, lidWithDevice, currentUser: currentUserJid, actualDeviceId }, '🔄 Own device with LID mapping but no LID session - will create LID session')
-									jidToFetch = lidWithDevice // Use LID JID with correct device ID for session creation
+									
+									logger.info({ jid, lidForPN, lidWithDevice, currentUser: currentUserJid, actualDeviceId }, '🔄 Own device: creating BOTH PN and LID sessions')
+									
+									// Add both PN and LID to fetch list
+									if (!jidsRequiringFetch.includes(jid)) {
+										jidsRequiringFetch.push(jid) // Original PN address
+										logger.debug({ originalJid: jid }, 'Adding PN address to fetch list for own device')
+									}
+									if (!jidsRequiringFetch.includes(lidWithDevice)) {
+										jidsRequiringFetch.push(lidWithDevice) // LID address
+										logger.debug({ lidJid: lidWithDevice }, 'Adding LID address to fetch list for own device')
+									}
+									
+									// Skip setting jidToFetch since we already added both to the fetch list
+									continue
 								} else {
 									// For contact devices, fall back to PN when LID session missing
 									logger.warn({ jid, lidForPN, contact: jid }, '❌ Contact has LID mapping but no LID session - falling back to PN session creation')
