@@ -34,6 +34,11 @@ import {
 	parseAndInjectE2ESessions,
 	unixTimestampSeconds
 } from '../Utils'
+import { 
+	enumerateLIDDevices, 
+	shouldUseLIDDeviceEnumeration, 
+	createLIDDeviceFallback 
+} from '../Utils/lid-device-enumeration'
 import { getUrlInfo } from '../Utils/link-preview'
 import { getMessageSenderJid } from '../Utils/sender-identity'
 import {
@@ -309,14 +314,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						wireJid: jid // Preserve exact JID format
 					})
 				} else {
-					// This is a user JID - would need device enumeration, but since it's LID
-					// and we don't do server queries for LID, just use device 0
-					logger.debug({ jid }, 'Processing LID user JID - using device 0')
-					deviceResults.push({ 
-						user: user!, 
-						device: 0,
-						wireJid: jidEncode(user!, 'lid', 0) // Construct LID device JID
-					})
+					// This is a user JID - add to enumeration list for server-side device discovery
+					logger.debug({ jid }, '📋 Adding LID user JID to enumeration list')
+					toFetch.push(jid)
 				}
 				continue // Skip normal processing for LID addresses
 			}
@@ -434,18 +434,74 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 		}
 
-		if (!toFetch.length) {
-			logger.debug({ deviceResultsCount: deviceResults.length }, '✅ No JIDs to fetch, returning existing devices')
+		// ENHANCED LID DEVICE ENUMERATION: Separate LID JIDs for server-side enumeration
+		const lidJidsForEnumeration: string[] = []
+		const pnJidsForEnumeration: string[] = []
+		
+		// Separate LID and PN JIDs that need server enumeration
+		for (const jid of toFetch) {
+			if (jid.includes('@lid') && shouldUseLIDDeviceEnumeration(jid)) {
+				lidJidsForEnumeration.push(jid)
+			} else if (jid.includes('@s.whatsapp.net')) {
+				pnJidsForEnumeration.push(jid)
+			}
+		}
+		
+		// Attempt LID device enumeration first
+		if (lidJidsForEnumeration.length > 0) {
+			logger.info({ lidJids: lidJidsForEnumeration, count: lidJidsForEnumeration.length }, '🔍 Attempting server-side LID device enumeration')
+			
+			const myLid = authState.creds.me?.lid || authState.creds.me!.id
+			const lidEnumResult = await enumerateLIDDevices(
+				lidJidsForEnumeration, 
+				myLid, 
+				ignoreZeroDevices,
+				sock.executeUSyncQuery
+			)
+			
+			if (lidEnumResult.success && lidEnumResult.devices.length > 0) {
+				logger.info({ 
+					enumeratedDevices: lidEnumResult.devices.length,
+					devices: lidEnumResult.devices.map(d => `${d.user}:${d.device}`)
+				}, '✅ Server-side LID device enumeration successful')
+				
+				// Convert to DeviceWithWireJid format
+				const lidDevicesWithWire = lidEnumResult.devices.map(device => ({
+					...device,
+					wireJid: jidEncode(device.user, 'lid', device.device)
+				}))
+				deviceResults.push(...lidDevicesWithWire)
+			} else {
+				logger.warn({ 
+					error: lidEnumResult.error,
+					lidJids: lidJidsForEnumeration 
+				}, '⚠️ Server-side LID enumeration failed, falling back to device 0')
+				
+				// Fallback to device 0 for each LID JID that failed enumeration
+				for (const lidJid of lidJidsForEnumeration) {
+					const fallbackDevices = createLIDDeviceFallback(lidJid)
+					const fallbackWithWire = fallbackDevices.map(device => ({
+						...device,
+						wireJid: jidEncode(device.user, 'lid', device.device)
+					}))
+					deviceResults.push(...fallbackWithWire)
+					logger.debug({ lidJid, fallbackDevice: fallbackWithWire[0] }, '🔄 Added LID fallback device')
+				}
+			}
+		}
+
+		if (!pnJidsForEnumeration.length) {
+			logger.debug({ deviceResultsCount: deviceResults.length }, '✅ No PN JIDs to fetch, returning existing devices with LID enumeration')
 			return deviceResults
 		}
 
-		logger.info({ toFetch, fetchCount: toFetch.length }, '🔍 Executing USyncQuery for device enumeration')
+		logger.info({ pnJids: pnJidsForEnumeration, fetchCount: pnJidsForEnumeration.length }, '🔍 Executing USyncQuery for PN device enumeration')
 		
 		const query = new USyncQuery().withContext('message').withDeviceProtocol()
 
-		for (const jid of toFetch) {
+		for (const jid of pnJidsForEnumeration) {
 			query.withUser(new USyncUser().withId(jid))
-			logger.debug({ jid }, '📋 Added JID to USyncQuery')
+			logger.debug({ jid }, '📋 Added PN JID to USyncQuery')
 		}
 
 		const result = await sock.executeUSyncQuery(query)
@@ -818,32 +874,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				
 				// WIRE JID: Determine encryption identity (following whatsmeow's approach)
 				let encryptionJid = wireJid
-				// if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
-				// 	try {
-				// 		const lidStore = signalRepository.getLIDMappingStore()
-				// 		const lidForPN = await lidStore.getLIDForPN(wireJid)
-						
-				// 		// if (lidForPN && lidForPN.includes('@lid')) {
-				// 		// 	// CRITICAL FIX: Only use LID for encryption if we already have a LID session
-				// 		// 	// DO NOT migrate sessions during message sending - only during receiving
-				// 		// 	const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
-				// 		// 	const lidSessions = await authState.keys.get('session', [lidSignalId])
-				// 		// 	const hasLIDSession = !!lidSessions[lidSignalId]
-							
-				// 		// 	// if (hasLIDSession) {
-				// 		// 	// 	// We have LID session - use it for encryption
-				// 		// 	// 	encryptionJid = lidForPN
-				// 		// 	// 	console.log(`🔄 Using existing LID session for encryption: ${wireJid} → ${lidForPN}`)
-				// 		// 	// } else {
-				// 		// 	// 	// NO LID session - stick with PN for encryption
-				// 		// 	// 	// Migration should only happen during message decryption, not sending
-				// 		// 	// 	console.log(`🔄 No LID session found - using PN for encryption: ${wireJid}`)
-				// 		// 	// }
-				// 		// }
-				// 	} catch (error) {
-				// 		console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)
-				// 	}
-				// }
 				
 				// SIMPLE: Just encrypt with the determined identity (like original)
 				const { type, ciphertext } = await signalRepository.encryptMessage({ 

@@ -180,6 +180,35 @@ export const extractDeviceJids = (result: USyncQueryResultList[], myJid: string,
 }
 
 /**
+ * Extract LID devices from USyncQuery results with LID device protocol
+ * Following whatsmeow's approach for LID device enumeration
+ */
+export const extractLIDDeviceJids = (result: USyncQueryResultList[], myLid: string, excludeZeroDevices: boolean) => {
+	const { user: myUser, device: myDevice } = jidDecode(myLid)!
+
+	const extracted: JidWithDevice[] = []
+
+	for (const userResult of result) {
+		const { lid_devices, id } = userResult as { lid_devices: import('../WAUSync/Protocols/USyncLIDDeviceProtocol').ParsedLIDDeviceInfo; id: string }
+		const { user } = jidDecode(id)!
+		const deviceList = lid_devices?.deviceList
+		if (Array.isArray(deviceList)) {
+			for (const { id: device, keyIndex } of deviceList) {
+				if (
+					(!excludeZeroDevices || device !== 0) && // if zero devices are not-excluded, or device is non zero
+					(myUser !== user || myDevice !== device) && // either different user or if me user, not this device
+					(device === 0 || !!keyIndex) // ensure that "key-index" is specified for "non-zero" devices, produces a bad req otherwise
+				) {
+					extracted.push({ user, device })
+				}
+			}
+		}
+	}
+
+	return extracted
+}
+
+/**
  * get the next N keys for upload or processing
  * @param count number of pre-keys to get or generate
  */
