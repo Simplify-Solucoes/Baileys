@@ -837,12 +837,40 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 					const bytes = encodeWAMessage(messageToEncrypt)
 					
-					// WIRE JID: Determine encryption identity (following whatsmeow's approach)
+					// WHATSMEOW PATTERN: Separate wire identity from encryption identity
+					// Wire JID = envelope addressing (preserve user's original choice)
+					// Encryption JID = Signal protocol (prefer LID when available)
 					let encryptionJid = wireJid
 					
-					// SEQUENTIAL ENCRYPTION: Encrypt with the determined identity
+					// Check if we should use LID for encryption instead of PN
+					if (wireJid.includes('@s.whatsapp.net')) {
+						try {
+							const lidMapping = signalRepository.getLIDMappingStore()
+							const normalizedWireJid = jidNormalizedUser(wireJid)
+							const lidForPN = await lidMapping.getLIDForPN(normalizedWireJid)
+							
+							if (lidForPN && lidForPN.includes('@lid')) {
+								// Preserve device ID from original wire JID
+								const wireDecoded = jidDecode(wireJid)
+								const deviceId = wireDecoded?.device || 0
+								const lidDecoded = jidDecode(lidForPN)
+								const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
+								
+								// Check if LID session exists
+								const lidSessionExists = await signalRepository.validateSession(lidWithDevice)
+								if (lidSessionExists.exists) {
+									encryptionJid = lidWithDevice
+									logger.debug({ wireJid, encryptionJid }, '🔐 Using LID for encryption while preserving PN wire identity')
+								}
+							}
+						} catch (error) {
+							logger.debug({ wireJid, error }, 'Failed to check LID mapping for encryption identity')
+						}
+					}
+					
+					// SEQUENTIAL ENCRYPTION: Encrypt with the determined encryption identity
 					const { type, ciphertext } = await signalRepository.encryptMessage({ 
-						jid: encryptionJid,  // Use LID if available, PN otherwise
+						jid: encryptionJid,  // Encryption identity (prefers LID)
 						data: bytes
 					})
 					
@@ -2021,29 +2049,29 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					additionalNodes
 				})
 				
-				// Cache message using simplified whatsmeow approach with wire-encryption separation
-				// CRITICAL: Use original JID as wire JID, not the migrated LID
-				const wireJid = jid  // Original JID passed by user
+				// DUAL-IDENTITY CACHING: Cache with both wire JID and encryption identity
+				// This ensures retry receipts work regardless of which identity WhatsApp uses
+				const wireJid = jid  // Original JID passed by user (wire identity)
 				const msgId = fullMsg.key.id!
 				const message = fullMsg.message!
 				
-				// Cache with wire JID (primary)
+				// Primary cache: Always cache with wire JID (what's in message.key.remoteJid)
 				messageCache.addRecentMessage(wireJid, msgId, message)
-				logger.trace({ remoteJid: wireJid, msgId }, 'Message cached with wire JID')
+				logger.trace({ wireJid, msgId }, 'Message cached with wire JID (primary)')
 				
-				// WHATSMEOW PATTERN: Also cache with LID address if different from wire address
+				// Secondary cache: Also cache with LID if different from wire JID (for retry compatibility)
 				if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
 					try {
 						const lidStore = signalRepository.getLIDMappingStore()
 						const lidForPN = await lidStore.getLIDForPN(wireJid)
 						
 						if (lidForPN && lidForPN.includes('@lid') && lidForPN !== wireJid) {
-							// Cache the same message with LID address for retry receipt compatibility
+							// Cache the same message with LID identity for retry receipt compatibility
 							messageCache.addRecentMessage(lidForPN, msgId, message)
-							logger.trace({ lidJid: lidForPN, msgId }, 'Message also cached with LID address')
+							logger.trace({ wireJid, lidJid: lidForPN, msgId }, 'Message also cached with LID identity for retry compatibility')
 						}
 					} catch (error) {
-						logger.warn({ wireJid, error }, 'Failed to cache with LID address')
+						logger.debug({ wireJid, error }, 'Failed to cache with LID identity')
 					}
 				}
 
