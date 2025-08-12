@@ -380,18 +380,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
 						
 						if (isOwnDevice) {
-							// For own devices, create LID session even if it doesn't exist yet
-							// CRITICAL FIX: Use the actual device ID from the original JID, not hardcoded 0
-							const originalDecoded = jidDecode(jid)
-							const actualDeviceId = originalDecoded?.device || 0
-							logger.info({ lidForPN, currentUser: currentUserJid, actualDeviceId }, '🔄 Own device with LID mapping but no LID session - creating LID device')
-							deviceResults.push({ 
-								user: lidUser!, // Use LID user for internal tracking
-								device: actualDeviceId, // Use actual device ID from original JID
-								wireJid: jidEncode(lidUser!, 'lid', actualDeviceId) // Wire JID uses LID format with correct device ID
-							})
-							// Skip normal PN processing since we're using LID
-							continue
+							// CRITICAL FIX: For own devices, DON'T auto-migrate to prevent ratchet corruption
+							// Apply the same approach as contacts - let both PN and LID sessions coexist
+							logger.info({ lidForPN, currentUser: currentUserJid, originalJid: jid }, '🔄 Own device: skipping auto-migration to preserve ratchet independence')
+							// DON'T create LID device here, DON'T skip PN processing
+							// Fall through to normal PN processing to maintain dual sessions like contacts
 						} else {
 							// For contact devices, fall back to PN when LID session missing
 							logger.warn({ lidForPN, contact: jid }, '❌ Contact has LID mapping but no LID session - falling back to PN session creation')
