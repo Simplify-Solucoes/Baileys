@@ -835,7 +835,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleReceipt = async (node: BinaryNode) => {
-		logger.info({ node }, 'recv receipt')
+		// Enhanced receipt logging with all important details
+		logger.info({ 
+			receiptType: node.attrs.type,
+			from: node.attrs.from,
+			recipient: node.attrs.recipient,
+			participant: node.attrs.participant,
+			messageId: node.attrs.id,
+			timestamp: node.attrs.t,
+			// Include additional IDs if it's a bulk receipt
+			additionalIds: Array.isArray(node.content) ? 
+				getBinaryNodeChildren(node.content[0], 'item').map(i => i.attrs.id) : 
+				undefined,
+			isOffline: node.attrs.offline,
+			// Full node for debugging if needed
+			fullNode: node
+		}, 'recv receipt')
 		const { attrs, content } = node
 		const isLid = attrs.from!.includes('lid')
 		const isNodeFromMe = areJidsSameUser(
