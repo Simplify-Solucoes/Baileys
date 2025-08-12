@@ -252,36 +252,40 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const toFetch: string[] = []
 		jids = Array.from(new Set(jids))
 		
-		// CRITICAL FIX: Remove PN duplicates when LID versions exist
+		// CRITICAL FIX: Remove PN duplicates when LID versions exist (but allow both for own devices)
 		// If both "102765716062358@lid" and "102765716062358@s.whatsapp.net" are present, 
-		// prefer the LID version
-		const lidUsers = new Set<string>()
-		const filteredJids: string[] = []
-		
-		// First pass: collect all LID users
-		for (const jid of jids) {
-			if (jid.includes('@lid')) {
-				const user = jidDecode(jid)?.user
-				if (user) {
-					lidUsers.add(user)
+		// prefer the LID version for contacts, but keep both for own devices
+		if (!disableAutoMigration) {
+			const lidUsers = new Set<string>()
+			const filteredJids: string[] = []
+			
+			// First pass: collect all LID users
+			for (const jid of jids) {
+				if (jid.includes('@lid')) {
+					const user = jidDecode(jid)?.user
+					if (user) {
+						lidUsers.add(user)
+					}
 				}
 			}
-		}
-		
-		// Second pass: filter out PN versions if LID exists
-		for (const jid of jids) {
-			if (jid.includes('@s.whatsapp.net')) {
-				const user = jidDecode(jid)?.user
-				if (user && lidUsers.has(user)) {
-					logger.debug({ jid, lidUser: user }, '🚫 Skipping PN version - LID version exists')
-					continue // Skip PN version when LID exists
+			
+			// Second pass: filter out PN versions if LID exists (for contacts only)
+			for (const jid of jids) {
+				if (jid.includes('@s.whatsapp.net')) {
+					const user = jidDecode(jid)?.user
+					if (user && lidUsers.has(user)) {
+						logger.debug({ jid, lidUser: user }, '🚫 Skipping PN version - LID version exists')
+						continue // Skip PN version when LID exists
+					}
 				}
+				filteredJids.push(jid)
 			}
-			filteredJids.push(jid)
+			
+			jids = filteredJids
+			logger.debug({ originalCount: Array.from(new Set(jids)).length, filteredCount: jids.length, filteredJids: jids }, '✅ Filtered JIDs to remove PN/LID duplicates')
+		} else {
+			logger.debug({ disableAutoMigration: true }, '✅ Multi-session delivery: keeping all PN and LID sessions')
 		}
-		
-		jids = filteredJids
-		logger.debug({ originalCount: Array.from(new Set(jids)).length, filteredCount: jids.length, filteredJids: jids }, '✅ Filtered JIDs to remove PN/LID duplicates')
 
 		for (let jid of jids) {
 			const decoded = jidDecode(jid)
