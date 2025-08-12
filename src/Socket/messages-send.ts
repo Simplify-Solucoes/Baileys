@@ -535,13 +535,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		
 		// Second pass: filter out PN versions if LID exists
 		for (const jid of jids) {
-			// if (jid.includes('@s.whatsapp.net')) {
-			// 	const user = jidDecode(jid)?.user
-			// 	// if (user && lidUsers.has(user)) {
-			// 	// 	logger.debug({ jid, lidUser: user }, '🚫 assertSessions: Skipping PN version - LID version exists')
-			// 	// 	continue // Skip PN version when LID exists
-			// 	// }
-			// }
+			if (jid.includes('@s.whatsapp.net')) {
+				const user = jidDecode(jid)?.user
+				if (user && lidUsers.has(user)) {
+					logger.debug({ jid, lidUser: user }, '🚫 assertSessions: Skipping PN version - LID version exists')
+					continue // Skip PN version when LID exists
+				}
+			}
 			filteredJids.push(jid)
 		}
 		
@@ -818,32 +818,32 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				
 				// WIRE JID: Determine encryption identity (following whatsmeow's approach)
 				let encryptionJid = wireJid
-				if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
-					try {
-						const lidStore = signalRepository.getLIDMappingStore()
-						const lidForPN = await lidStore.getLIDForPN(wireJid)
+				// if (wireJid.includes('@s.whatsapp.net') && !wireJid.includes('bot')) {
+				// 	try {
+				// 		const lidStore = signalRepository.getLIDMappingStore()
+				// 		const lidForPN = await lidStore.getLIDForPN(wireJid)
 						
-						if (lidForPN && lidForPN.includes('@lid')) {
-							// CRITICAL FIX: Only use LID for encryption if we already have a LID session
-							// DO NOT migrate sessions during message sending - only during receiving
-							const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
-							const lidSessions = await authState.keys.get('session', [lidSignalId])
-							const hasLIDSession = !!lidSessions[lidSignalId]
+				// 		// if (lidForPN && lidForPN.includes('@lid')) {
+				// 		// 	// CRITICAL FIX: Only use LID for encryption if we already have a LID session
+				// 		// 	// DO NOT migrate sessions during message sending - only during receiving
+				// 		// 	const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
+				// 		// 	const lidSessions = await authState.keys.get('session', [lidSignalId])
+				// 		// 	const hasLIDSession = !!lidSessions[lidSignalId]
 							
-							if (hasLIDSession) {
-								// We have LID session - use it for encryption
-								encryptionJid = lidForPN
-								console.log(`🔄 Using existing LID session for encryption: ${wireJid} → ${lidForPN}`)
-							} else {
-								// NO LID session - stick with PN for encryption
-								// Migration should only happen during message decryption, not sending
-								console.log(`🔄 No LID session found - using PN for encryption: ${wireJid}`)
-							}
-						}
-					} catch (error) {
-						console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)
-					}
-				}
+				// 		// 	// if (hasLIDSession) {
+				// 		// 	// 	// We have LID session - use it for encryption
+				// 		// 	// 	encryptionJid = lidForPN
+				// 		// 	// 	console.log(`🔄 Using existing LID session for encryption: ${wireJid} → ${lidForPN}`)
+				// 		// 	// } else {
+				// 		// 	// 	// NO LID session - stick with PN for encryption
+				// 		// 	// 	// Migration should only happen during message decryption, not sending
+				// 		// 	// 	console.log(`🔄 No LID session found - using PN for encryption: ${wireJid}`)
+				// 		// 	// }
+				// 		// }
+				// 	} catch (error) {
+				// 		console.warn(`⚠️ Failed LID lookup for ${wireJid}:`, error)
+				// 	}
+				// }
 				
 				// SIMPLE: Just encrypt with the determined identity (like original)
 				const { type, ciphertext } = await signalRepository.encryptMessage({ 
