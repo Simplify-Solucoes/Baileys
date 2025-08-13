@@ -600,10 +600,43 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			// User-level migration key
 			const userMigrationKey = `${pnUser}→${lidUser}`
 			
-			// Check if user was already migrated
+			// Check if user was already migrated - but verify if migration was actually complete
 			if (isRecentlyMigrated(userMigrationKey)) {
-				console.log(`✅ User migration already completed: ${pnUser} → ${lidUser}`)
-				return
+				console.log(`✅ User migration marked as completed: ${pnUser} → ${lidUser}`)
+				
+				// BUT: Check if there are any PN sessions that still need migration
+				// This handles incomplete migrations or new devices appearing later
+				const allSessions = await auth.keys.get('session', [])
+				const sessionPrefix = `${pnUser}.`
+				
+				const devicesNeedingMigration: number[] = []
+				for (const sessionId of Object.keys(allSessions)) {
+					if (sessionId.startsWith(sessionPrefix) && allSessions[sessionId]) {
+						const devicePart = sessionId.substring(sessionPrefix.length)
+						const deviceId = parseInt(devicePart) || 0
+						
+						// Check if corresponding LID session exists
+						const lidDeviceJid = deviceId === 0 ? `${lidUser}@lid` : `${lidUser}:${deviceId}@lid`
+						const lidAddr = jidToSignalProtocolAddress(lidDeviceJid).toString()
+						
+						try {
+							const lidSession = await storage.loadSession(lidAddr)
+							if (!lidSession || !lidSession.haveOpenSession()) {
+								devicesNeedingMigration.push(deviceId)
+							}
+						} catch (error) {
+							devicesNeedingMigration.push(deviceId) // If we can't check, assume it needs migration
+						}
+					}
+				}
+				
+				if (devicesNeedingMigration.length === 0) {
+					console.log(`✅ All devices already properly migrated for user ${pnUser}`)
+					return
+				}
+				
+				console.log(`🔄 Found ${devicesNeedingMigration.length} devices still needing migration: ${devicesNeedingMigration.join(', ')}`)
+				// Continue with migration for remaining devices...
 			}
 			
 			console.log(`🔄 WHATSMEOW MigratePNToLID: ${pnUser} → ${lidUser} (triggered by device ${triggerDevice})`)
