@@ -22,6 +22,7 @@ import {
 import type { DeviceListData, ParsedDeviceInfo, USyncQueryResultList } from '../WAUSync'
 import { Curve, generateSignalPubKey } from './crypto'
 import { encodeBigEndian } from './generics'
+import logger from './logger'
 
 function chunk<T>(array: T[], size: number): T[][] {
 	const chunks: T[][] = []
@@ -170,6 +171,11 @@ export const extractDeviceJids = (result: USyncQueryResultList[], myJid: string,
 					(myUser !== user || myDevice !== device) && // either different user or if me user, not this device
 					(device === 0 || !!keyIndex) // ensure that "key-index" is specified for "non-zero" devices, produces a bad req otherwise
 				) {
+					logger.info({
+						user,
+						device,
+						keyIndex,
+					});
 					extracted.push({ user, device })
 				}
 			}
