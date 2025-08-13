@@ -285,6 +285,18 @@ export const decryptMessageNode = (
 									try {
 										await repository.storeLIDPNMapping(senderAlt, sender)
 										logger.debug({ sender, senderAlt }, 'Stored new LID mapping discovered from message envelope')
+										
+										// Trigger session migration for the device that sent this message
+										const senderDecoded = jidDecode(sender)
+										const deviceId = senderDecoded?.device || 0
+										const lidWithDevice = jidEncode(jidDecode(senderAlt)!.user, 'lid', deviceId)
+										
+										try {
+											await repository.migrateSession(sender, lidWithDevice)
+											logger.info({ from: sender, to: lidWithDevice }, '🔄 Migrated session to LID after discovering mapping from envelope')
+										} catch (migrationError) {
+											logger.warn({ sender, lidWithDevice, error: migrationError }, 'Failed to migrate session after LID discovery')
+										}
 									} catch (error) {
 										logger.error({ sender, senderAlt, error }, 'Failed to store LID mapping from envelope')
 									}
