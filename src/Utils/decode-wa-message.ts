@@ -249,7 +249,17 @@ export const decryptMessageNode = (
 												decryptionJid = lidWithDevice
 												logger.debug({ originalSender: sender, migrationTarget: lidWithDevice }, '🔄 Using migrated LID session for decryption')
 											} else {
-												logger.debug({ sender, lidMapping: lidWithDevice }, '⚠️ LID mapping found but no LID session - using PN session')
+												// LID mapping exists but no session - trigger migration
+												logger.info({ sender, lidMapping: lidWithDevice }, '🔄 LID mapping found but no LID session - triggering migration')
+												try {
+													await repository.migrateSession(sender, lidWithDevice)
+													logger.info({ from: sender, to: lidWithDevice }, '🔄 Created LID session via migration during decryption')
+													// Now use the newly created LID session
+													decryptionJid = lidWithDevice
+												} catch (migrationError) {
+													logger.warn({ sender, lidWithDevice, error: migrationError }, 'Failed to migrate to LID session - using PN session')
+													// Keep using PN session as fallback
+												}
 											}
 										}
 									} catch (error) {
