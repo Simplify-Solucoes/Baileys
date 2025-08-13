@@ -360,6 +360,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					// Found LID mapping - use LID instead of PN (whatsmeow pattern)
 					logger.info({ originalPN: jid, lidAddress: lidForPN }, '✅ Auto-migrating PN to LID (whatsmeow LID priority)')
 					
+					// CRITICAL: Migrate ALL device sessions when LID mapping discovered
+					try {
+						await signalRepository.migrateSession(jid, lidForPN)
+						logger.info({ from: jid, to: lidForPN }, '🔄 Migrated ALL device sessions from PN to LID during device enumeration')
+					} catch (migrationError) {
+						logger.warn({ jid, lidForPN, error: migrationError }, 'Failed to migrate sessions during device enumeration')
+					}
+					
 					// Process as LID address (same logic as LID processing above)
 					const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
 					const lidSessions = await authState.keys.get('session', [lidSignalId])
@@ -642,6 +650,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						logger.debug({ jid, normalizedJid, lidForPN }, 'LID mapping lookup result')
 						
 						if (lidForPN && lidForPN.includes('@lid')) {
+							// CRITICAL: Migrate ALL device sessions when LID mapping exists
+							try {
+								await signalRepository.migrateSession(normalizedJid, lidForPN)
+								logger.info({ from: normalizedJid, to: lidForPN }, '🔄 Migrated ALL device sessions from PN to LID in assertSessions')
+							} catch (migrationError) {
+								logger.warn({ normalizedJid, lidForPN, error: migrationError }, 'Failed to migrate sessions in assertSessions')
+							}
+							
 							// CRITICAL: Preserve device ID from original JID
 							const originalDecoded = jidDecode(jid)
 							const actualDeviceId = originalDecoded?.device || 0
@@ -860,18 +876,24 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							const lidForPN = await lidMapping.getLIDForPN(normalizedWireJid)
 							
 							if (lidForPN && lidForPN.includes('@lid')) {
+								// CRITICAL: Migrate ALL device sessions when LID mapping exists
+								// This ensures all devices use LID going forward
+								try {
+									await signalRepository.migrateSession(normalizedWireJid, lidForPN)
+									logger.info({ from: normalizedWireJid, to: lidForPN }, '🔄 Migrated ALL device sessions from PN to LID for encryption')
+								} catch (migrationError) {
+									logger.warn({ normalizedWireJid, lidForPN, error: migrationError }, 'Failed to migrate sessions during encryption')
+								}
+								
 								// Preserve device ID from original wire JID
 								const wireDecoded = jidDecode(wireJid)
 								const deviceId = wireDecoded?.device || 0
 								const lidDecoded = jidDecode(lidForPN)
 								const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
 								
-								// Check if LID session exists
-								const lidSessionExists = await signalRepository.validateSession(lidWithDevice)
-								if (lidSessionExists.exists) {
-									encryptionJid = lidWithDevice
-									logger.debug({ wireJid, encryptionJid }, '🔐 Using LID for encryption while preserving PN wire identity')
-								}
+								// Use LID for encryption (session should exist after migration)
+								encryptionJid = lidWithDevice
+								logger.debug({ wireJid, encryptionJid }, '🔐 Using LID for encryption while preserving PN wire identity')
 							}
 						} catch (error) {
 							logger.debug({ wireJid, error }, 'Failed to check LID mapping for encryption identity')
