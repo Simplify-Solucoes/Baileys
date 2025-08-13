@@ -226,28 +226,38 @@ export const decryptMessageNode = (
 								break
 							case 'pkmsg':
 							case 'msg':
-								// WHATSMEOW PATTERN: Use determineLIDEncryptionJid for consistent LID handling
-								const { senderAlt: msgSenderAlt } = extractAddressingContext(stanza, sender)
-								const { encryptionJid: decryptionJid, shouldMigrate } = await determineLIDEncryptionJid(
-									sender,
-									msgSenderAlt,
-									repository,
-									logger,
-									meId
-								)
+								// WHATSMEOW PATTERN: Check for LID migration before decryption
+								// If sender has migrated to LID, use the LID session instead of PN
+								let decryptionJid = sender
 								
-								// Handle session migration if needed
-								if (shouldMigrate && sender !== decryptionJid) {
+								// Check if sender is PN but has migrated to LID
+								if (sender.includes('@s.whatsapp.net')) {
 									try {
-										// Migrate sessions from PN to LID
-										await repository.migrateSession(sender, decryptionJid)
-										logger.info({ from: sender, to: decryptionJid }, '🔄 Migrated sessions from PN to LID for decryption')
+										const lidMapping = repository.getLIDMappingStore()
+										const normalizedSender = jidNormalizedUser(sender)
+										const lidForPN = await lidMapping.getLIDForPN(normalizedSender)
+										
+										if (lidForPN && lidForPN.includes('@lid')) {
+											// Preserve device ID from original sender
+											const senderDecoded = jidDecode(sender)
+											const deviceId = senderDecoded?.device || 0
+											const lidWithDevice = jidEncode(jidDecode(lidForPN)!.user, 'lid', deviceId)
+											
+											// Check if LID session exists
+											const lidSessionExists = await repository.validateSession(lidWithDevice)
+											if (lidSessionExists.exists) {
+												decryptionJid = lidWithDevice
+												logger.debug({ originalSender: sender, migrationTarget: lidWithDevice }, '🔄 Using migrated LID session for decryption')
+											} else {
+												logger.debug({ sender, lidMapping: lidWithDevice }, '⚠️ LID mapping found but no LID session - using PN session')
+											}
+										}
 									} catch (error) {
-										logger.warn({ sender, decryptionJid, error }, 'Failed to migrate sessions during decryption')
+										logger.warn({ sender, error }, 'Failed to check LID migration during decryption')
 									}
 								}
 								
-								logger.debug({ sender, decryptionJid, type: e2eType, shouldMigrate }, 'Decrypting message with determined JID')
+								logger.debug({ sender, decryptionJid, type: e2eType }, 'Decrypting message with determined JID')
 								
 								// DECRYPT with the determined JID (either original or migrated LID)
 								msgBuffer = await repository.decryptMessage({

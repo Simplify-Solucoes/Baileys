@@ -891,9 +891,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								const lidDecoded = jidDecode(lidForPN)
 								const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
 								
+								// Check if LID session exists
+								const lidSessionExists = await signalRepository.validateSession(lidWithDevice)
+								if (lidSessionExists.exists) {
 								// Use LID for encryption (session should exist after migration)
 								encryptionJid = lidWithDevice
 								logger.debug({ wireJid, encryptionJid }, '🔐 Using LID for encryption while preserving PN wire identity')
+								} else {
+									logger.debug({ wireJid, lidWithDevice }, '⚠️ LID mapping found but no LID session - using PN encryption')
+								}
 							}
 						} catch (error) {
 							logger.debug({ wireJid, error }, 'Failed to check LID mapping for encryption identity')
