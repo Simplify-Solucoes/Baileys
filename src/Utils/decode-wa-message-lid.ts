@@ -1,6 +1,6 @@
 import type { SignalRepository } from '../Types'
 import type { ILogger } from './logger'
-import { isJidUser, isLidUser } from '../WABinary'
+import { isJidUser, isLidUser, jidDecode, jidEncode } from '../WABinary'
 
 /**
  * Apply WhatsApp's LID priority system to determine encryption identity
@@ -27,12 +27,20 @@ export async function determineLIDEncryptionJid(
     
     // PRIORITY 1: Use LID from message metadata (info.SenderAlt)
     if (senderAlt && isLidUser(senderAlt)) {
+        // Preserve device ID from original sender
+        const senderDecoded = jidDecode(sender)
+        const deviceId = senderDecoded?.device || 0
+        const lidDecoded = jidDecode(senderAlt)
+        
+        // Construct LID with correct device ID
+        encryptionJid = jidEncode(lidDecoded?.user!, 'lid', deviceId)
+        
         logger.info({ 
             sender, 
             senderAlt, 
-            deviceId: sender.split(':')[1]?.split('@')[0] || '0'
-        }, 'Using LID from message metadata')
-        encryptionJid = senderAlt
+            deviceId,
+            encryptionJid
+        }, 'Using LID from message metadata with preserved device ID')
         shouldMigrate = true // Always migrate when switching to LID
         return { encryptionJid, shouldMigrate }
     }
@@ -43,12 +51,20 @@ export async function determineLIDEncryptionJid(
         const storedLid = await lidStore.getLIDForPN(sender)
         
         if (storedLid) {
+            // Preserve device ID from original sender
+            const senderDecoded = jidDecode(sender)
+            const deviceId = senderDecoded?.device || 0
+            const lidDecoded = jidDecode(storedLid)
+            
+            // Construct LID with correct device ID
+            encryptionJid = jidEncode(lidDecoded?.user!, 'lid', deviceId)
+            
             logger.info({ 
                 sender, 
                 storedLid, 
-                deviceId: sender.split(':')[1]?.split('@')[0] || '0'
-            }, 'Using stored LID mapping')
-            encryptionJid = storedLid
+                deviceId,
+                encryptionJid
+            }, 'Using stored LID mapping with preserved device ID')
             shouldMigrate = true // Always migrate when switching to LID
             return { encryptionJid, shouldMigrate }
         }
