@@ -597,63 +597,28 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			const lidUser = toDecoded.user
 			const triggerDevice = fromDecoded.device || 0
 			
-			// User-level migration key
-			const userMigrationKey = `${pnUser}→${lidUser}`
 			
-			// Get ALL sessions and analyze what needs migration (single pass, no duplication)
-			const allSessions = await auth.keys.get('session', [])
-			const sessionPrefix = `${pnUser}.`
+			// SIMPLIFIED: Just migrate the specific device that sent the message
+			console.log(`🔄 Simple device migration: only migrating device ${triggerDevice} for user ${pnUser}`)
 			
-			// DEBUG: Log all sessions to understand the actual storage format
-			console.log(`🔍 DEBUG: All sessions count: ${Object.keys(allSessions).length}`)
-			console.log(`🔍 DEBUG: Sample sessions:`, Object.keys(allSessions).slice(0, 20))
-			console.log(`🔍 DEBUG: Looking for sessions with prefix: ${sessionPrefix}`)
+			const devicesToMigrate = [triggerDevice]
 			
-			// Find all PN sessions and check which need migration
-			const devicesToMigrate: number[] = []
-			const existingPNSessions: string[] = []
-			const alreadyMigratedDevices: number[] = []
-			
-			for (const sessionId of Object.keys(allSessions)) {
-				if (sessionId.startsWith(sessionPrefix) && allSessions[sessionId]) {
-					existingPNSessions.push(sessionId)
-					const devicePart = sessionId.substring(sessionPrefix.length)
-					const deviceId = parseInt(devicePart) || 0
-					
-					// Check if corresponding LID session exists
-					const lidDeviceJid = deviceId === 0 ? `${lidUser}@lid` : `${lidUser}:${deviceId}@lid`
-					const lidAddr = jidToSignalProtocolAddress(lidDeviceJid).toString()
-					
-					try {
-						const lidSession = await storage.loadSession(lidAddr)
-						if (!lidSession || !lidSession.haveOpenSession()) {
-							devicesToMigrate.push(deviceId)
-							console.log(`🔍 Device ${deviceId} needs migration - no LID session`)
-						} else {
-							alreadyMigratedDevices.push(deviceId)
-							console.log(`🔍 Device ${deviceId} already has LID session`)
-						}
-					} catch (error) {
-						devicesToMigrate.push(deviceId)
-						console.log(`🔍 Device ${deviceId} needs migration - error checking LID session:`, error)
-					}
-				}
+			// Check if this specific device migration was already done
+			const deviceMigrationKey = `${pnUser}.${triggerDevice}→${lidUser}.${triggerDevice}`
+			if (isRecentlyMigrated(deviceMigrationKey)) {
+				console.log(`✅ Device migration already completed: ${pnUser}.${triggerDevice} → ${lidUser}.${triggerDevice}`)
+				return
 			}
 			
-			console.log(`🔍 DEBUG: Found PN sessions: ${existingPNSessions}`)
-			console.log(`🔍 DEBUG: Devices needing migration: ${devicesToMigrate}`)
-			console.log(`🔍 DEBUG: Already migrated devices: ${alreadyMigratedDevices}`)
-			
-			// Check if migration was already marked complete
-			if (isRecentlyMigrated(userMigrationKey)) {
-				console.log(`✅ User migration marked as completed: ${pnUser} → ${lidUser}`)
-				
-				if (devicesToMigrate.length === 0) {
-					console.log(`✅ All devices already properly migrated for user ${pnUser}`)
-					return
-				}
-				
-				console.log(`🔄 Found ${devicesToMigrate.length} devices still needing migration despite completed flag: ${devicesToMigrate.join(', ')}`)
+			// Second layer: Check if LID session already exists in Redis (following codebase pattern)
+			const lidDeviceJid = triggerDevice === 0 ? `${lidUser}@lid` : `${lidUser}:${triggerDevice}@lid`
+			const lidSessionAddr = jidToSignalProtocolAddress(lidDeviceJid).toString()
+			const { [lidSessionAddr]: lidSessionExists } = await auth.keys.get('session', [lidSessionAddr])
+			if (lidSessionExists) {
+				console.log(`✅ LID session already exists in Redis: ${lidSessionAddr}`)
+				// Cache the migration result for future lookups
+				markAsMigrated(deviceMigrationKey)
+				return
 			}
 			
 			console.log(`🔄 WHATSMEOW MigratePNToLID: ${pnUser} → ${lidUser} (triggered by device ${triggerDevice})`)
@@ -665,8 +630,8 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					await lidMapping.storeLIDPNMapping(toJid, fromJid)
 					console.log(`🔗 LID mapping stored: ${pnUser} ↔ ${lidUser}`)
 					
-					// Use the already discovered devices that need migration
-					console.log(`📱 Migrating ${devicesToMigrate.length} devices for user ${pnUser}: ${devicesToMigrate.join(', ')}`)
+					// Migrate the specific device that triggered this migration
+					console.log(`📱 Migrating device ${triggerDevice} for user ${pnUser}`)
 					
 					// Migrate each device session
 					for (const deviceId of devicesToMigrate) {
@@ -709,8 +674,8 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 						}
 					}
 					
-					markAsMigrated(userMigrationKey)
-					console.log(`✅ User migration completed: ${pnUser} → ${lidUser} (${devicesToMigrate.length} devices)`)
+					markAsMigrated(deviceMigrationKey)
+					console.log(`✅ Device migration completed: ${pnUser}.${triggerDevice} → ${lidUser}.${triggerDevice}`)
 					
 				} catch (error) {
 					console.error(`❌ User PN→LID migration failed: ${pnUser} → ${lidUser}`, error)
