@@ -777,19 +777,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		let shouldForceSession = true
 		
 		if (participant.includes('@s.whatsapp.net') && !alternativeAddressingUsed) {
-			// Check if we have migrated LID session - if so, don't recreate PN session
+			// CRITICAL: Trigger comprehensive migration when LID mapping exists
 			try {
 				const lidForPN = await lidStore.getLIDForPN(participant)
 				if (lidForPN && lidForPN.includes('@lid')) {
+					// Trigger comprehensive migration for ALL devices
+					try {
+						const normalizedParticipant = jidNormalizedUser(participant)
+						await signalRepository.migrateSession(normalizedParticipant, lidForPN)
+						logger.info({ from: normalizedParticipant, to: lidForPN }, '🔄 Migrated ALL device sessions during retry receipt handling')
+					} catch (migrationError) {
+						logger.warn({ participant, lidForPN, error: migrationError }, 'Failed to migrate sessions during retry receipt')
+					}
+					
+					// Check if the specific device LID session now exists
 					const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
 					const lidSessions = await authState.keys.get('session', [lidSignalId])
 					const hasLIDSession = !!lidSessions[lidSignalId]
 					
 					if (hasLIDSession) {
-						logger.debug({ participant, lidForPN }, 'Skipping PN session recreation - using migrated LID session')
+						logger.debug({ participant, lidForPN }, 'Using migrated LID session after comprehensive migration')
 						shouldForceSession = false
 						// Switch to LID for message sending
 						participant = lidForPN
+					} else {
+						logger.warn({ participant, lidForPN }, 'LID session still missing after migration - allowing PN session creation')
 					}
 				}
 			} catch (error) {
