@@ -242,11 +242,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	/** Fetch all the devices we've to send a message to */
-	const getUSyncDevices = async (jids: string[], useCache: boolean, ignoreZeroDevices: boolean, disableAutoMigration = false): Promise<DeviceWithWireJid[]> => {
+	const getUSyncDevices = async (jids: string[], useCache: boolean, ignoreZeroDevices: boolean, disableAutoMigration = false, conversationContext?: 'pn' | 'lid'): Promise<DeviceWithWireJid[]> => {
 		const deviceResults: DeviceWithWireJid[] = []
 
 		// DEBUG: Log input JIDs to understand what's being passed
-		logger.debug({ jids, useCache, ignoreZeroDevices, disableAutoMigration }, '🔍 getUSyncDevices called with JIDs')
+		logger.debug({ jids, useCache, ignoreZeroDevices, disableAutoMigration, conversationContext }, '🔍 getUSyncDevices called with JIDs')
 
 		if (!useCache) {
 			logger.debug('not using cache for devices')
@@ -355,12 +355,36 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						const actualDeviceId = originalDecoded?.device || 0
 						
 						if (ownLidUser) {
+							// ADDRESSING MODE CONSISTENCY: Select wire identity based on conversation context
+							const meId = authState.creds.me!.id
+							const meLid = authState.creds.me?.lid
+							const originalPnUser = jidDecode(meId)!.user
+							
+							let wireJid: string
+							let wireUser: string
+							
+							if (conversationContext === 'lid' && meLid) {
+								// LID conversation context: use LID wire identity
+								wireUser = ownLidUser
+								wireJid = jidEncode(ownLidUser, 'lid', actualDeviceId)
+							} else {
+								// PN conversation context (or no context): use PN wire identity
+								wireUser = originalPnUser
+								wireJid = jidEncode(originalPnUser, 's.whatsapp.net', actualDeviceId)
+							}
+							
 							deviceResults.push({
-								user: ownLidUser,
+								user: wireUser, // Wire user matches wire JID format
 								device: actualDeviceId,
-								wireJid: jidEncode(ownLidUser, 'lid', actualDeviceId)
+								wireJid: wireJid
 							})
-							logger.info({ ownLidJid: jidEncode(ownLidUser, 'lid', actualDeviceId) }, '✅ Added own device as LID - single encryption layer maintained')
+							
+							logger.info({ 
+								wireJid: wireJid,
+								conversationContext: conversationContext || 'pn',
+								encryptionUser: ownLidUser,
+								reason: 'addressing_consistency'
+							}, '✅ Added own device with context-aware wire identity and LID encryption')
 							continue // Skip PN processing for own device
 						}
 					}
@@ -504,7 +528,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				if (!disableAutoMigration) {
 					try {
 						// Check for LID mapping for this user
-						const pnJid = jidEncode(item.user, 's.whatsapp.net', undefined) // User-level JID for mapping lookup
 						const lidMapping = signalRepository.getLIDMappingStore()
 						const lidForPN = await lidMapping.getLIDForPN(item.user)
 						
@@ -1272,7 +1295,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 					}
 
-					const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false)
+					const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false, false, isLid ? 'lid' : 'pn')
 					devices.push(...additionalDevices)
 				}
 
@@ -1410,7 +1433,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								
 								// Enumerate devices for this specific session pair
 								// MULTI-SESSION MODE: Enable enumeration for both session types
-								const sessionDevices = await getUSyncDevices([senderIdentity, targetSession], false, false, false)
+								const sessionDevices = await getUSyncDevices([senderIdentity, targetSession], false, false, false, isLid ? 'lid' : 'pn')
 								
 								// Add devices with session context - ensure proper wire JID format
 								const devicesWithContext = sessionDevices.map(device => {
