@@ -322,12 +322,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Normal PN processing - WHATSMEOW PATTERN: Check for LID mapping first (LID priority)
 			jid = jidNormalizedUser(jid)
 			
-			// LID-FIRST APPROACH: Apply LID priority to ALL devices including own devices
+			// ADDRESSING MODE CONSISTENCY: Check if this is our own device
 			const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
 			const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
 			
 			if (isOwnDevice) {
-				logger.info({ jid, currentUser: currentUserJid }, '📱 Own device detected: applying LID-first approach with PN cleanup')
+				logger.info({ jid, currentUser: currentUserJid }, '📱 Own device detected: preserving addressing mode consistency')
+				// For own devices, don't apply LID migration - maintain addressing mode alignment
 			}
 			
 			// Check if this is an explicit PN device JID
@@ -346,9 +347,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				continue // Skip enumeration for explicit device JIDs
 			}
 			
-			// LID-FIRST APPROACH: Automatic PN→LID migration when LID mapping exists
-			// Apply to ALL devices (contacts AND own devices) for single encryption layer consistency
-			if (!disableAutoMigration) {
+			// RECIPIENT LID MIGRATION: Apply LID migration only to recipient devices (not own devices)
+			// Own devices maintain addressing mode consistency (PN↔PN, LID↔LID)
+			if (!disableAutoMigration && !isOwnDevice) {
 				try {
 					const lidMapping = signalRepository.getLIDMappingStore()
 					const lidForPN = await lidMapping.getLIDForPN(jid)
@@ -388,14 +389,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// Skip normal PN processing since we're using LID
 						continue
 					} else {
-						// CRITICAL FIX: Check if this is our own device vs contact device
-						const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
-						const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
+						// RECIPIENT LID MIGRATION: Apply migration for recipient devices
+						logger.info({ lidForPN, jid }, '🔄 Recipient LID mapping found - creating LID session for encryption')
 						
-						// LID-FIRST APPROACH: Apply consistent migration to ALL devices (own and contacts)
-						logger.info({ lidForPN, isOwnDevice, jid }, '🔄 LID mapping found - creating LID session and will delete PN session')
-						
-						// Add LID device for session creation (with correct device ID) - applies to both own and contact devices
+						// Add LID device for session creation (with correct device ID) - recipients only
 						const actualDeviceId = originalDecoded?.device || 0
 						deviceResults.push({ 
 							user: lidUser!, 
@@ -403,8 +400,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							wireJid: jidEncode(lidUser!, 'lid', actualDeviceId)
 						})
 						
-						// Skip PN processing since we're creating LID session - applies to both own and contact devices
-						logger.debug({ originalPN: jid, lidJid: lidForPN, isOwnDevice }, '✅ Added LID device for session creation instead of PN - single encryption layer')
+						// Skip PN processing since we're creating LID session for recipient
+						logger.debug({ originalPN: jid, lidJid: lidForPN }, '✅ Added recipient LID device for encryption - maintaining wire/encryption separation')
 						continue
 					}
 				}
@@ -782,7 +779,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		let shouldIncludeDeviceIdentity = false
 		const meId = authState.creds.me!.id
-		const meLidUser = authState.creds.me?.lid ? jidDecode(authState.creds.me.lid)?.user : null
+		const meLid = authState.creds.me?.lid
+		const meLidUser = meLid ? jidDecode(meLid)?.user : null
 
 		// RACE CONDITION FIX: Group devices by user to prevent Signal session corruption
 		// Encrypt to all devices of same user sequentially, but different users in parallel
@@ -833,61 +831,94 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 					const bytes = encodeWAMessage(messageToEncrypt)
 					
-					// LID-FIRST APPROACH: Always check for LID mapping and migrate to single encryption layer
-					// Wire JID = envelope addressing (preserve user's original choice)
-					// Encryption JID = Signal protocol (ALWAYS prefer LID, delete PN sessions after migration)
+					// ADDRESSING MODE SEPARATION: Wire JID vs Encryption JID
+					// Wire JID = envelope addressing (preserve original format for routing)  
+					// Encryption JID = Signal protocol (prefer LID when available for recipients)
 					let encryptionJid = wireJid
-					let sessionMigrated = false
 					
-					// UNIVERSAL LID CHECK: Check for LID mapping regardless of wire JID type
-					try {
-						const lidMapping = signalRepository.getLIDMappingStore()
-						const normalizedWireJid = jidNormalizedUser(wireJid)
-						let lidForPN: string | null = null
-						
-						if (wireJid.includes('@s.whatsapp.net')) {
-							// PN wire JID - check for LID mapping
-							lidForPN = await lidMapping.getLIDForPN(normalizedWireJid)
-						} else if (wireJid.includes('@lid')) {
-							// LID wire JID - already have LID, just need to preserve device ID
-							lidForPN = normalizedWireJid + '@lid'
-						}
-						
-						if (lidForPN && lidForPN.includes('@lid')) {
-							// Preserve device ID from original wire JID
-							const wireDecoded = jidDecode(wireJid)
-							const deviceId = wireDecoded?.device || 0
-							const lidDecoded = jidDecode(lidForPN)
-							const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
+					// Only apply LID migration for RECIPIENT devices (not our own wire identity)
+					// Our own identity stays consistent with addressing mode
+					const recipientUser = jidNormalizedUser(wireJid)
+					const ownPnUser = jidNormalizedUser(meId)
+					const isOwnDevice = recipientUser === ownPnUser
+					
+					if (!isOwnDevice && wireJid.includes('@s.whatsapp.net')) {
+						// This is a recipient device - check for LID migration for encryption
+						try {
+							const lidMapping = signalRepository.getLIDMappingStore()
+							const lidForPN = await lidMapping.getLIDForPN(recipientUser)
 							
-							// AGGRESSIVE MIGRATION: Always migrate and delete PN sessions to maintain single encryption layer
-							try {
-								await signalRepository.migrateSession(normalizedWireJid, lidForPN)
-								sessionMigrated = true
-								logger.info({ from: normalizedWireJid, to: lidForPN, deviceId }, '🔄 Migrated to LID and will delete PN sessions')
+							if (lidForPN && lidForPN.includes('@lid')) {
+								// Preserve device ID from original wire JID
+								const wireDecoded = jidDecode(wireJid)
+								const deviceId = wireDecoded?.device || 0
+								const lidDecoded = jidDecode(lidForPN)
+								const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
 								
-								// DELETE PN SESSION after successful migration to maintain single encryption layer
-								if (wireJid.includes('@s.whatsapp.net')) {
+								// Migrate recipient session to LID and delete PN session
+								try {
+									await signalRepository.migrateSession(recipientUser, lidForPN)
+									logger.info({ recipient: recipientUser, lidMapping: lidForPN, deviceId }, '🔄 Migrated recipient to LID encryption')
+									
+									// Delete PN session for recipient
 									try {
 										await signalRepository.deleteSession(wireJid)
-										logger.info({ deletedPNSession: wireJid, usingLIDSession: lidWithDevice }, '🗑️ Deleted PN session after LID migration - single encryption layer maintained')
+										logger.info({ deletedPNSession: wireJid, usingLIDSession: lidWithDevice }, '🗑️ Deleted recipient PN session - using LID encryption')
 									} catch (deleteError) {
-										logger.warn({ wireJid, lidWithDevice, error: deleteError }, 'Failed to delete PN session after LID migration')
+										logger.warn({ wireJid, lidWithDevice, error: deleteError }, 'Failed to delete recipient PN session')
 									}
+									
+									// Use LID for encryption while preserving wire JID for envelope
+									encryptionJid = lidWithDevice
+									logger.debug({ wireJid, encryptionJid }, '🔐 Using LID encryption for recipient with PN wire identity')
+									
+								} catch (migrationError) {
+									logger.warn({ recipientUser, lidForPN, error: migrationError }, 'Failed to migrate recipient to LID - using PN encryption')
 								}
-								
-								// Always use LID for encryption after migration
-								encryptionJid = lidWithDevice
-								logger.info({ wireJid, encryptionJid, sessionMigrated }, '🔐 Using LID for encryption - chain consistency maintained')
-								
-							} catch (migrationError) {
-								logger.warn({ normalizedWireJid, lidForPN, error: migrationError }, 'Failed to migrate to LID - falling back to PN encryption')
 							}
-						} else {
-							logger.debug({ wireJid, normalizedWireJid }, '📞 No LID mapping found - using PN encryption as fallback')
+						} catch (error) {
+							logger.debug({ wireJid, error }, 'Failed to check recipient LID mapping')
 						}
-					} catch (error) {
-						logger.debug({ wireJid, error }, 'Failed to check LID mapping for encryption identity')
+					} else if (isOwnDevice) {
+						// OWN DEVICE LOGIC: Always migrate to LID for single encryption layer, but detect addressing mode from context
+						logger.debug({ wireJid, ownPnUser }, '📱 Own device detected - migrating to LID encryption but maintaining addressing consistency')
+						
+						try {
+							const lidMapping = signalRepository.getLIDMappingStore()
+							const ownLidForPN = await lidMapping.getLIDForPN(recipientUser)
+							
+							if (ownLidForPN && ownLidForPN.includes('@lid')) {
+								// We have LID mapping for own device - always migrate for single encryption layer
+								const wireDecoded = jidDecode(wireJid)
+								const deviceId = wireDecoded?.device || 0
+								const lidDecoded = jidDecode(ownLidForPN)
+								const ownLidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
+								
+								try {
+									await signalRepository.migrateSession(recipientUser, ownLidForPN)
+									logger.info({ ownDevice: recipientUser, lidMapping: ownLidForPN, deviceId }, '🔄 Migrated own device to LID encryption (single layer)')
+									
+									// Delete PN session for own device
+									try {
+										await signalRepository.deleteSession(wireJid)
+										logger.info({ deletedOwnPNSession: wireJid, usingOwnLIDSession: ownLidWithDevice }, '🗑️ Deleted own PN session - using LID encryption')
+									} catch (deleteError) {
+										logger.warn({ wireJid, ownLidWithDevice, error: deleteError }, 'Failed to delete own PN session')
+									}
+									
+									// Always use LID for encryption (single layer), wire JID stays consistent with addressing mode
+									encryptionJid = ownLidWithDevice
+									logger.debug({ wireJid, encryptionJid }, '🔐 Using LID encryption for own device with addressing mode consistency')
+									
+								} catch (migrationError) {
+									logger.warn({ ownDevice: recipientUser, ownLidForPN, error: migrationError }, 'Failed to migrate own device to LID - using PN encryption')
+								}
+							} else {
+								logger.debug({ wireJid }, '📞 No LID mapping for own device - using PN encryption')
+							}
+						} catch (error) {
+							logger.debug({ wireJid, error }, 'Failed to check own device LID mapping')
+						}
 					}
 					
 					// SEQUENTIAL ENCRYPTION: Encrypt with the determined encryption identity
@@ -952,6 +983,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	) => {
 		let meId = authState.creds.me!.id
 		let meLid = authState.creds.me?.lid
+
+		// ADDRESSING MODE CONSISTENCY: Use LID identity only when sending to LID recipients
+		// This ensures proper addressing mode alignment (PN↔PN, LID↔LID)
+		// isLid = true when jid is "@lid" (LID conversation context)
+		// isLid = false when jid is "@s.whatsapp.net" (PN conversation context)
 
 		let shouldIncludeDeviceIdentity = false
 
@@ -1241,9 +1277,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						
 						// Create placeholder entries for own user with proper addressing consistency
 						if (user !== ownUser) {
-							// If target has LID and we have LID capability, use LID for own devices too
-							const ownUserServer = (hasLidSession && meLid) ? 'lid' : 's.whatsapp.net'
-							const ownUserForAddressing = (hasLidSession && meLid) ? jidDecode(meLid)!.user : ownUser
+							// ADDRESSING MODE CONSISTENCY: Use LID for own devices only in LID conversation context
+							// This ensures PN↔PN and LID↔LID addressing consistency
+							const ownUserServer = (isLid && meLid) ? 'lid' : 's.whatsapp.net'
+							const ownUserForAddressing = (isLid && meLid) ? jidDecode(meLid)!.user : ownUser
 							
 							devices.push({ 
 								user: ownUserForAddressing, 
@@ -1260,13 +1297,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							for (const targetSession of targetSessions) {
 								const targetIsLid = jidDecode(targetSession)?.server === 'lid'
 								
-								// ADDRESSING CONSISTENCY: Match sender identity to recipient session type
+								// ADDRESSING CONSISTENCY: Match sender identity to CONVERSATION CONTEXT, not individual sessions
+								// This maintains overall addressing mode consistency (PN↔PN, LID↔LID)
 								let senderIdentity: string
-								if (targetIsLid && meLid) {
-									// LID recipient → use LID sender identity
+								if (isLid && meLid) {
+									// LID conversation context → always use LID sender identity
 									senderIdentity = jidEncode(jidDecode(meLid)!.user, 'lid', undefined)
 								} else {
-									// PN recipient → use PN sender identity  
+									// PN conversation context → always use PN sender identity  
 									senderIdentity = jidEncode(jidDecode(meId)!.user, 's.whatsapp.net', undefined)
 								}
 								
