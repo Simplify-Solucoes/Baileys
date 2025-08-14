@@ -231,14 +231,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		await sendReceipts(keys, readType)
 	}
 
-	/** Enhanced device info that preserves wire JID format and session context */
+	/** Device info with wire JID format for envelope addressing */
 	type DeviceWithWireJid = JidWithDevice & {
-		wireJid: string // The exact JID format that should be used in wire protocol
-		sessionContext?: {
-			targetSession: string
-			senderIdentity: string  
-			addressingMode: 'lid' | 'pn'
-		}
+		wireJid: string // The exact JID format that should be used in wire protocol (envelope addressing)
 	}
 
 	/** Fetch all the devices we've to send a message to */
@@ -355,36 +350,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						const actualDeviceId = originalDecoded?.device || 0
 						
 						if (ownLidUser) {
-							// ADDRESSING MODE CONSISTENCY: Select wire identity based on conversation context
+							// CRITICAL: Keep PN wire identity but use LID for encryption sessions
 							const meId = authState.creds.me!.id
-							const meLid = authState.creds.me?.lid
 							const originalPnUser = jidDecode(meId)!.user
-							
-							let wireJid: string
-							let wireUser: string
-							
-							if (conversationContext === 'lid' && meLid) {
-								// LID conversation context: use LID wire identity
-								wireUser = ownLidUser
-								wireJid = jidEncode(ownLidUser, 'lid', actualDeviceId)
-							} else {
-								// PN conversation context (or no context): use PN wire identity
-								wireUser = originalPnUser
-								wireJid = jidEncode(originalPnUser, 's.whatsapp.net', actualDeviceId)
-							}
+							const wireJid = jidEncode(originalPnUser, 's.whatsapp.net', actualDeviceId)
 							
 							deviceResults.push({
-								user: wireUser, // Wire user matches wire JID format
+								user: originalPnUser, // PN user for wire consistency
 								device: actualDeviceId,
-								wireJid: wireJid
+								wireJid: wireJid // PN wire JID for envelope (encryption will migrate to LID automatically)
 							})
 							
 							logger.info({ 
 								wireJid: wireJid,
-								conversationContext: conversationContext || 'pn',
-								encryptionUser: ownLidUser,
-								reason: 'addressing_consistency'
-							}, '✅ Added own device with context-aware wire identity and LID encryption')
+								reason: 'pn_wire_unified_encryption'
+							}, '✅ Added own device: PN wire JID with unified encryption layer')
 							continue // Skip PN processing for own device
 						}
 					}
@@ -449,16 +429,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// RECIPIENT LID MIGRATION: Apply migration for recipient devices
 						logger.info({ lidForPN, jid }, '🔄 Recipient LID mapping found - creating LID session for encryption')
 						
-						// Add LID device for session creation (with correct device ID) - recipients only
+						// Add recipient with PN wire JID but LID encryption session
 						const actualDeviceId = originalDecoded?.device || 0
+						const originalPnUser = jidDecode(jid)!.user
+						const pnWireJid = jidEncode(originalPnUser, 's.whatsapp.net', actualDeviceId)
+						
 						deviceResults.push({ 
-							user: lidUser!, 
+							user: originalPnUser, // PN user for wire consistency
 							device: actualDeviceId,
-							wireJid: jidEncode(lidUser!, 'lid', actualDeviceId)
+							wireJid: pnWireJid // PN wire JID for envelope (encryption will migrate to LID automatically)
 						})
 						
-						// Skip PN processing since we're creating LID session for recipient
-						logger.debug({ originalPN: jid, lidJid: lidForPN }, '✅ Added recipient LID device for encryption - maintaining wire/encryption separation')
+						// Skip PN processing since we're handling with unified encryption layer
+						logger.debug({ originalPN: jid, lidJid: lidForPN }, '✅ Added recipient device with unified encryption layer')
 						continue
 					}
 				}
@@ -947,19 +930,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 					const bytes = encodeWAMessage(messageToEncrypt)
 					
-					// ADDRESSING MODE SEPARATION: Wire JID vs Encryption JID
-					// Wire JID = envelope addressing (preserve original format for routing)  
-					// Encryption JID = Signal protocol (prefer LID when available for recipients)
+					// UNIFIED ENCRYPTION LAYER: Always use migrated LID session when available
+					// Keep wire JID for envelope addressing, but simplify encryption to LID-first approach
 					let encryptionJid = wireJid
 					
-					// Only apply LID migration for RECIPIENT devices (not our own wire identity)
-					// Our own identity stays consistent with addressing mode
+					// Check if we should migrate this device to LID for encryption
 					const recipientUser = jidNormalizedUser(wireJid)
 					const ownPnUser = jidNormalizedUser(meId)
 					const isOwnDevice = recipientUser === ownPnUser
 					
-					if (!isOwnDevice && wireJid.includes('@s.whatsapp.net')) {
-						// This is a recipient device - check for LID migration for encryption
+					// For ALL devices (own and recipient), check for LID migration for unified encryption layer
+					if (wireJid.includes('@s.whatsapp.net')) {
 						try {
 							const lidMapping = signalRepository.getLIDMappingStore()
 							const lidForPN = await lidMapping.getLIDForPN(recipientUser)
@@ -971,75 +952,35 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								const lidDecoded = jidDecode(lidForPN)
 								const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
 								
-								// Migrate recipient session to LID and delete PN session
+								// Migrate session to LID for unified encryption layer
 								try {
 									await signalRepository.migrateSession(recipientUser, lidForPN)
-									logger.info({ recipient: recipientUser, lidMapping: lidForPN, deviceId }, '🔄 Migrated recipient to LID encryption')
+									logger.info({ user: recipientUser, isOwnDevice, lidMapping: lidForPN, deviceId }, '🔄 Migrated to LID encryption (unified layer)')
 									
-									// Delete PN session for recipient
+									// Delete PN session - we only want LID sessions for encryption
 									try {
 										await signalRepository.deleteSession(wireJid)
-										logger.info({ deletedPNSession: wireJid, usingLIDSession: lidWithDevice }, '🗑️ Deleted recipient PN session - using LID encryption')
+										logger.debug({ deletedPNSession: wireJid, usingLIDSession: lidWithDevice }, '🗑️ Deleted PN session - unified LID encryption')
 									} catch (deleteError) {
-										logger.warn({ wireJid, lidWithDevice, error: deleteError }, 'Failed to delete recipient PN session')
+										logger.warn({ wireJid, lidWithDevice, error: deleteError }, 'Failed to delete PN session')
 									}
 									
-									// Use LID for encryption while preserving wire JID for envelope
+									// Always use LID for encryption, keep wire JID for addressing
 									encryptionJid = lidWithDevice
-									logger.debug({ wireJid, encryptionJid }, '🔐 Using LID encryption for recipient with PN wire identity')
+									logger.debug({ wireJid, encryptionJid, isOwnDevice }, '🔐 Unified LID encryption layer')
 									
 								} catch (migrationError) {
-									logger.warn({ recipientUser, lidForPN, error: migrationError }, 'Failed to migrate recipient to LID - using PN encryption')
+									logger.warn({ user: recipientUser, lidForPN, error: migrationError }, 'Failed to migrate to LID - using PN encryption')
 								}
 							}
 						} catch (error) {
-							logger.debug({ wireJid, error }, 'Failed to check recipient LID mapping')
-						}
-					} else if (isOwnDevice) {
-						// OWN DEVICE LOGIC: Always migrate to LID for single encryption layer, but detect addressing mode from context
-						logger.debug({ wireJid, ownPnUser }, '📱 Own device detected - migrating to LID encryption but maintaining addressing consistency')
-						
-						try {
-							const lidMapping = signalRepository.getLIDMappingStore()
-							const ownLidForPN = await lidMapping.getLIDForPN(recipientUser)
-							
-							if (ownLidForPN && ownLidForPN.includes('@lid')) {
-								// We have LID mapping for own device - always migrate for single encryption layer
-								const wireDecoded = jidDecode(wireJid)
-								const deviceId = wireDecoded?.device || 0
-								const lidDecoded = jidDecode(ownLidForPN)
-								const ownLidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
-								
-								try {
-									await signalRepository.migrateSession(recipientUser, ownLidForPN)
-									logger.info({ ownDevice: recipientUser, lidMapping: ownLidForPN, deviceId }, '🔄 Migrated own device to LID encryption (single layer)')
-									
-									// Delete PN session for own device
-									try {
-										await signalRepository.deleteSession(wireJid)
-										logger.info({ deletedOwnPNSession: wireJid, usingOwnLIDSession: ownLidWithDevice }, '🗑️ Deleted own PN session - using LID encryption')
-									} catch (deleteError) {
-										logger.warn({ wireJid, ownLidWithDevice, error: deleteError }, 'Failed to delete own PN session')
-									}
-									
-									// Always use LID for encryption (single layer), wire JID stays consistent with addressing mode
-									encryptionJid = ownLidWithDevice
-									logger.debug({ wireJid, encryptionJid }, '🔐 Using LID encryption for own device with addressing mode consistency')
-									
-								} catch (migrationError) {
-									logger.warn({ ownDevice: recipientUser, ownLidForPN, error: migrationError }, 'Failed to migrate own device to LID - using PN encryption')
-								}
-							} else {
-								logger.debug({ wireJid }, '📞 No LID mapping for own device - using PN encryption')
-							}
-						} catch (error) {
-							logger.debug({ wireJid, error }, 'Failed to check own device LID mapping')
+							logger.debug({ wireJid, error }, 'Failed to check LID mapping')
 						}
 					}
 					
-					// SEQUENTIAL ENCRYPTION: Encrypt with the determined encryption identity
+					// ENCRYPT: Use the determined encryption identity (prefers migrated LID)
 					const { type, ciphertext } = await signalRepository.encryptMessage({ 
-						jid: encryptionJid,  // Encryption identity (prefers LID)
+						jid: encryptionJid,  // Unified encryption layer (LID when available)
 						data: bytes
 					})
 					
@@ -1100,10 +1041,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		let meId = authState.creds.me!.id
 		let meLid = authState.creds.me?.lid
 
-		// ADDRESSING MODE CONSISTENCY: Use LID identity only when sending to LID recipients
-		// This ensures proper addressing mode alignment (PN↔PN, LID↔LID)
-		// isLid = true when jid is "@lid" (LID conversation context)
-		// isLid = false when jid is "@s.whatsapp.net" (PN conversation context)
+		// ADDRESSING CONSISTENCY: Keep envelope addressing as user provided, handle LID migration in encryption
+		// When sending to @s.whatsapp.net -> use authState.creds.me!.id for own addressing 
+		// When sending to @lid -> use authState.creds.me.lid for own addressing
+		// Encryption layer will handle LID session migration automatically
 
 		let shouldIncludeDeviceIdentity = false
 
@@ -1114,42 +1055,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		let isLid = server === 'lid'
 		const isNewsletter = server === 'newsletter'
 		
-		// WHATSMEOW EXACT: LID Priority - Automatic PN→LID migration when LID mapping exists
-		// MULTI-SESSION DELIVERY: Collect all available sessions for this contact
-		const targetSessions: string[] = [jid] // Always include user's explicit address
-		let primarySession = jid // Keep user's original choice as primary
+		// Keep user's original JID choice for envelope addressing
+		let finalJid = jid
 		
-		if (!isGroup && !isStatus && !isNewsletter) {
-			// Keep original addressing for message envelope - LID migration handled in encryption layer
-			if (!isLid && server === 's.whatsapp.net') {
-				logger.debug({ providedPN: jid }, 'Using PN address for message envelope - LID migration in encryption layer')
-			} else if (isLid) {
-				logger.debug({ providedLID: jid }, 'Using LID address for message envelope')
-			}
-		}
-		
-		if (targetSessions.length > 1) {
-			logger.info({ 
-				userInput: jid, 
-				primarySession, 
-				allSessions: targetSessions,
-				sessionCount: targetSessions.length 
-			}, '📡 Multi-session delivery: sending to all available sessions')
-		} else {
-			logger.debug({ 
-				userInput: jid, 
-				singleSession: targetSessions[0] 
-			}, '📡 Single-session delivery: no additional sessions found')
-		}
-		
-		// Use primary session for addressing mode determination
-		let finalJid = primarySession
-
-		// WHATSMEOW PATTERN: Use LID identity when sending to HiddenUserServer (lid)
+		// ADDRESSING CONSISTENCY: Match own identity to conversation context
 		let ownId = meId
 		if (isLid && meLid) {
 			ownId = meLid
-			logger.debug({ to: jid, ownId }, 'Using LID identity for HiddenUserServer message')
+			logger.debug({ to: jid, ownId }, 'Using LID identity for @lid conversation')
+		} else {
+			logger.debug({ to: jid, ownId }, 'Using PN identity for @s.whatsapp.net conversation')
 		}
 
 		msgId = msgId || generateMessageIDV2(sock.user?.id)
@@ -1364,24 +1279,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}, 'Sending to specific devices due to missing receipts')
 					} else {
 						// Normal device resolution with proper addressing consistency
-						// Determine the addressing mode based on target sessions
-						const hasLidSession = targetSessions.some(session => session.includes('@lid'))
-						const hasPnSession = targetSessions.some(session => session.includes('@s.whatsapp.net'))
+						// Device enumeration with conversation-consistent addressing
 						
-						// Create placeholder entries for target user
-						const targetUserServer = hasLidSession ? 'lid' : 's.whatsapp.net'
+						// SIMPLIFIED ADDRESSING: Use conversation context to determine addressing mode
+						// Target user gets same server type as conversation
+						const targetUserServer = isLid ? 'lid' : 's.whatsapp.net'
 						devices.push({ 
 							user, 
 							device: 0,
 							wireJid: jidEncode(user, targetUserServer, 0)
 						})
 						
-						// Create placeholder entries for own user with proper addressing consistency
+						// Own user matches conversation addressing mode  
 						if (user !== ownUser) {
-							// ADDRESSING MODE CONSISTENCY: Use LID for own devices only in LID conversation context
-							// This ensures PN↔PN and LID↔LID addressing consistency
-							const ownUserServer = (isLid && meLid) ? 'lid' : 's.whatsapp.net'
-							const ownUserForAddressing = (isLid && meLid) ? jidDecode(meLid)!.user : jidDecode(meId)!.user
+							const ownUserServer = isLid ? 'lid' : 's.whatsapp.net'
+							const ownUserForAddressing = isLid ? jidDecode(meLid!)!.user : jidDecode(meId)!.user
 							
 							devices.push({ 
 								user: ownUserForAddressing, 
@@ -1391,76 +1303,28 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 
 						if (additionalAttributes?.['category'] !== 'peer') {
-							// MULTI-SESSION DELIVERY: Maintain addressing mode consistency per session
-							// For each recipient session type, use matching sender identity
-							devices.length = 0 // Clear placeholders
-							
-							for (const targetSession of targetSessions) {
-								const targetIsLid = jidDecode(targetSession)?.server === 'lid'
-								
-								// ADDRESSING CONSISTENCY: Match sender identity to CONVERSATION CONTEXT, not individual sessions
-								// This maintains overall addressing mode consistency (PN↔PN, LID↔LID)
-								let senderIdentity: string
-								if (isLid && meLid) {
-									// LID conversation context → always use LID sender identity
-									senderIdentity = jidEncode(jidDecode(meLid)!.user, 'lid', undefined)
-								} else {
-									// PN conversation context → always use PN sender identity  
-									senderIdentity = jidEncode(jidDecode(meId)!.user, 's.whatsapp.net', undefined)
-								}
-								
-								logger.debug({ 
-									targetSession,
-									targetIsLid,
-									senderIdentity,
-									reason: 'addressing_consistency'
-								}, 'Session-specific device enumeration for consistent addressing')
-								
-								// Enumerate devices for this specific session pair
-								// MULTI-SESSION MODE: Enable enumeration for both session types
-								const sessionDevices = await getUSyncDevices([senderIdentity, targetSession], false, false, false, isLid ? 'lid' : 'pn')
-								
-								// Add devices with session context - ensure proper wire JID format
-								const devicesWithContext = sessionDevices.map(device => {
-									// Ensure wireJid matches the session addressing mode
-									let correctedWireJid = device.wireJid
-									
-									// If this is for a LID target session, ensure LID devices use LID wire format
-									if (targetIsLid && device.wireJid.includes('@s.whatsapp.net')) {
-										correctedWireJid = jidEncode(device.user, 'lid', device.device)
-									}
-									// If this is for a PN target session, ensure PN devices use PN wire format  
-									else if (!targetIsLid && device.wireJid.includes('@lid')) {
-										correctedWireJid = jidEncode(device.user, 's.whatsapp.net', device.device)
-									}
-									
-									return {
-										...device,
-										wireJid: correctedWireJid,
-										sessionContext: {
-											targetSession,
-											senderIdentity,
-											addressingMode: targetIsLid ? 'lid' as const : 'pn' as const
-										}
-									}
-								})
-								
-								devices.push(...devicesWithContext)
-							}
-							
-							// Remove duplicates while preserving session context
-							const uniqueDevices = devices.filter((device, index, arr) => 
-								arr.findIndex(d => d.wireJid === device.wireJid) === index
-							)
+							// Clear placeholders and enumerate actual devices
 							devices.length = 0
-							devices.push(...uniqueDevices)
+							
+							// Use conversation-appropriate sender identity
+							const senderIdentity = isLid && meLid ? 
+								jidEncode(jidDecode(meLid)!.user, 'lid', undefined) : 
+								jidEncode(jidDecode(meId)!.user, 's.whatsapp.net', undefined)
+							
+							logger.debug({ 
+								target: jid,
+								senderIdentity,
+								conversationType: isLid ? 'lid' : 'pn'
+							}, 'Enumerating devices with consistent addressing')
+							
+							// Enumerate devices for sender and target with consistent addressing
+							const sessionDevices = await getUSyncDevices([senderIdentity, jid], false, false, false, isLid ? 'lid' : 'pn')
+							devices.push(...sessionDevices)
 							
 							logger.debug({ 
 								deviceCount: devices.length,
-								devices: devices.map(d => `${d.user}:${d.device}@${jidDecode(d.wireJid)?.server}`),
-								sessionsTargeted: targetSessions.length,
-								uniqueDevices: uniqueDevices.length
-							}, 'Multi-session enumeration complete with addressing consistency')
+								devices: devices.map(d => `${d.user}:${d.device}@${jidDecode(d.wireJid)?.server}`)
+							}, 'Device enumeration complete with unified addressing')
 						}
 					}
 				}
