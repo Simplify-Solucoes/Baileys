@@ -1280,7 +1280,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							// ADDRESSING MODE CONSISTENCY: Use LID for own devices only in LID conversation context
 							// This ensures PN↔PN and LID↔LID addressing consistency
 							const ownUserServer = (isLid && meLid) ? 'lid' : 's.whatsapp.net'
-							const ownUserForAddressing = (isLid && meLid) ? jidDecode(meLid)!.user : ownUser
+							const ownUserForAddressing = (isLid && meLid) ? jidDecode(meLid)!.user : jidDecode(meId)!.user
 							
 							devices.push({ 
 								user: ownUserForAddressing, 
