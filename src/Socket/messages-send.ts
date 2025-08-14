@@ -1120,24 +1120,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		let primarySession = jid // Keep user's original choice as primary
 		
 		if (!isGroup && !isStatus && !isNewsletter) {
-			try {
-				const lidMapping = signalRepository.getLIDMappingStore()
-				
-				if (!isLid && server === 's.whatsapp.net') {
-					// User provided PN - check if LID session exists for single encryption layer
-					const lidForPN = await lidMapping.getLIDForPN(jid)
-					if (lidForPN && lidForPN.includes('@lid')) {
-						// SINGLE ENCRYPTION LAYER: Replace PN with LID, don't add both
-						targetSessions[0] = lidForPN // Replace primary session with LID
-						primarySession = lidForPN   // Update primary session
-						logger.debug({ originalPN: jid, usingLID: lidForPN }, 'Single encryption layer: using LID instead of PN')
-					}
-				} else if (isLid) {
-					// User provided LID - use it as-is (no need to check PN)
-					logger.debug({ providedLID: jid }, 'Single encryption layer: using provided LID address')
-				}
-			} catch (error) {
-				logger.debug({ jid, error }, 'Failed to check LID mapping during session determination')
+			// Keep original addressing for message envelope - LID migration handled in encryption layer
+			if (!isLid && server === 's.whatsapp.net') {
+				logger.debug({ providedPN: jid }, 'Using PN address for message envelope - LID migration in encryption layer')
+			} else if (isLid) {
+				logger.debug({ providedLID: jid }, 'Using LID address for message envelope')
 			}
 		}
 		
