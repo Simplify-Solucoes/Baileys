@@ -326,15 +326,48 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
 			const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
 			
-			if (isOwnDevice) {
-				logger.info({ jid, currentUser: currentUserJid }, '📱 Own device detected: preserving addressing mode consistency')
-				// For own devices, don't apply LID migration - maintain addressing mode alignment
-			}
-			
-			// Check if this is an explicit PN device JID
+			// Check if this is an explicit device JID (needed for both own and recipient devices)
 			const originalDecoded = jidDecode(jid)
 			const originalDevice = originalDecoded?.device
 			const isExplicitPNDevice = typeof originalDevice === 'number' && originalDevice >= 0
+			
+			// OWN DEVICE LID MIGRATION: Apply LID migration to own devices too for single encryption layer
+			if (isOwnDevice && !disableAutoMigration) {
+				try {
+					const lidMapping = signalRepository.getLIDMappingStore()
+					const ownLidForPN = await lidMapping.getLIDForPN(jid)
+					
+					if (ownLidForPN && ownLidForPN.includes('@lid')) {
+						// Found LID mapping for own device - migrate to LID-only encryption
+						logger.info({ originalPN: jid, ownLidAddress: ownLidForPN }, '📱 Own device LID mapping found - switching to LID-only encryption')
+						
+						// Migrate own device sessions to LID
+						try {
+							await signalRepository.migrateSession(jid, ownLidForPN)
+							logger.info({ from: jid, to: ownLidForPN }, '🔄 Migrated own device sessions from PN to LID (single encryption layer)')
+						} catch (migrationError) {
+							logger.warn({ jid, ownLidForPN, error: migrationError }, 'Failed to migrate own device sessions')
+						}
+						
+						// Process as LID device - skip PN processing completely
+						const lidDecoded = jidDecode(ownLidForPN)
+						const ownLidUser = lidDecoded?.user
+						const actualDeviceId = originalDecoded?.device || 0
+						
+						if (ownLidUser) {
+							deviceResults.push({
+								user: ownLidUser,
+								device: actualDeviceId,
+								wireJid: jidEncode(ownLidUser, 'lid', actualDeviceId)
+							})
+							logger.info({ ownLidJid: jidEncode(ownLidUser, 'lid', actualDeviceId) }, '✅ Added own device as LID - single encryption layer maintained')
+							continue // Skip PN processing for own device
+						}
+					}
+				} catch (error) {
+					logger.debug({ jid, error }, 'Failed to check own device LID mapping')
+				}
+			}
 			
 			if (isExplicitPNDevice) {
 				// This is an explicit PN device JID - use as-is, no enumeration needed
@@ -463,13 +496,73 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				deviceMap[item.user] = deviceMap[item.user] || []
 				deviceMap[item.user]?.push(item)
 
-				// Convert to DeviceWithWireJid - devices from PN enumeration use PN wire format
+				// CRITICAL FIX: Apply LID migration to USyncQuery results
+				// Check if this device should use LID instead of PN (single encryption layer)
+				let finalWireJid: string
+				let shouldUseLid = false
+				
+				if (!disableAutoMigration) {
+					try {
+						// Check for LID mapping for this user
+						const pnJid = jidEncode(item.user, 's.whatsapp.net', undefined) // User-level JID for mapping lookup
+						const lidMapping = signalRepository.getLIDMappingStore()
+						const lidForPN = await lidMapping.getLIDForPN(item.user)
+						
+						if (lidForPN && lidForPN.includes('@lid')) {
+							// Found LID mapping - migrate session and use LID wire format
+							shouldUseLid = true
+							const lidDecoded = jidDecode(lidForPN)
+							const lidUser = lidDecoded?.user
+							
+							if (lidUser) {
+								// Migrate session from PN to LID
+								try {
+									await signalRepository.migrateSession(item.user, lidForPN)
+									logger.info({ fromPN: item.user, toLID: lidForPN, device: item.device }, '🔄 USyncQuery result migrated to LID (single encryption layer)')
+									
+									// Delete PN session after migration
+									const pnDeviceJid = jidEncode(item.user, 's.whatsapp.net', item.device)
+									try {
+										await signalRepository.deleteSession(pnDeviceJid)
+										logger.info({ deletedPNSession: pnDeviceJid }, '🗑️ Deleted PN session after USyncQuery LID migration')
+									} catch (deleteError) {
+										logger.warn({ pnDeviceJid, error: deleteError }, 'Failed to delete PN session after USyncQuery LID migration')
+									}
+								} catch (migrationError) {
+									logger.warn({ user: item.user, lidForPN, error: migrationError }, 'Failed to migrate USyncQuery result to LID')
+									shouldUseLid = false // Fall back to PN
+								}
+								
+								// Use LID wire format for encryption
+								finalWireJid = jidEncode(lidUser, 'lid', item.device)
+							} else {
+								finalWireJid = jidEncode(item.user, 's.whatsapp.net', item.device)
+							}
+						} else {
+							// No LID mapping found - use PN format
+							finalWireJid = jidEncode(item.user, 's.whatsapp.net', item.device)
+						}
+					} catch (error) {
+						logger.debug({ user: item.user, device: item.device, error }, 'Failed to check LID mapping for USyncQuery result')
+						finalWireJid = jidEncode(item.user, 's.whatsapp.net', item.device)
+					}
+				} else {
+					// Auto-migration disabled - use PN format
+					finalWireJid = jidEncode(item.user, 's.whatsapp.net', item.device)
+				}
+
 				const deviceWithWire: DeviceWithWireJid = {
 					...item,
-					wireJid: jidEncode(item.user, 's.whatsapp.net', item.device)
+					wireJid: finalWireJid
 				}
 				deviceResults.push(deviceWithWire)
-				logger.debug({ user: item.user, device: item.device, wireJid: deviceWithWire.wireJid }, '✅ Added PN device to results')
+				
+				logger.debug({ 
+					user: item.user, 
+					device: item.device, 
+					finalWireJid,
+					usedLid: shouldUseLid 
+				}, '📱 Processed USyncQuery device result')
 			}
 
 			// Cache the results
