@@ -575,6 +575,37 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		},
 
 		/**
+		 * Delete Signal session for given JID - used for LID migration cleanup
+		 */
+		async deleteSession(jid: string) {
+			const addr = jidToSignalProtocolAddress(jid)
+			const addrStr = addr.toString()
+			
+			console.log(`🗑️ Deleting session for ${jid} (${addrStr})`)
+			
+			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+				try {
+					// Delete the session from storage
+					await auth.keys.set({ session: { [addrStr]: null } })
+					
+					// Clear decryption cache for this JID
+					const keysToDelete: string[] = []
+					decryptionCache.forEach((_, key) => {
+						if (key.startsWith(jid + ':')) {
+							keysToDelete.push(key)
+						}
+					})
+					keysToDelete.forEach(key => decryptionCache.delete(key))
+					
+					console.log(`✅ Session deleted for ${jid} - cache cleared`)
+				} catch (error) {
+					console.error(`❌ Session deletion failed for ${jid}:`, error)
+					throw error
+				}
+			})
+		},
+
+		/**
 		 * WHATSMEOW EXACT: MigratePNToLID - Copy sessions to LID while preserving PN sessions
 		 * ALIGNMENT: Following whatsmeow's approach of user-level migration with dual session availability
 		 */

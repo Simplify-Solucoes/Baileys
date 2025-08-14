@@ -226,45 +226,58 @@ export const decryptMessageNode = (
 								break
 							case 'pkmsg':
 							case 'msg':
-								// WHATSMEOW PATTERN: Check for LID migration before decryption
-								// If sender has migrated to LID, use the LID session instead of PN
+								// LID-FIRST DECRYPTION: Always check for LID mapping and migrate to single encryption layer
 								let decryptionJid = sender
+								let sessionMigrated = false
 								
-								// Check if sender is PN but has migrated to LID
-								if (sender.includes('@s.whatsapp.net')) {
-									try {
-										const lidMapping = repository.getLIDMappingStore()
-										const normalizedSender = jidNormalizedUser(sender)
-										const lidForPN = await lidMapping.getLIDForPN(normalizedSender)
+								// UNIVERSAL LID CHECK: Check for LID mapping regardless of sender JID type
+								try {
+									const lidMapping = repository.getLIDMappingStore()
+									const normalizedSender = jidNormalizedUser(sender)
+									let lidForPN: string | null = null
+									
+									if (sender.includes('@s.whatsapp.net')) {
+										// PN sender - check for LID mapping
+										lidForPN = await lidMapping.getLIDForPN(normalizedSender)
+									} else if (sender.includes('@lid')) {
+										// LID sender - already have LID, just need to preserve device ID
+										lidForPN = normalizedSender + '@lid'
+									}
+									
+									if (lidForPN && lidForPN.includes('@lid')) {
+										// Preserve device ID from original sender
+										const senderDecoded = jidDecode(sender)
+										const deviceId = senderDecoded?.device || 0
+										const lidWithDevice = jidEncode(jidDecode(lidForPN)!.user, 'lid', deviceId)
 										
-										if (lidForPN && lidForPN.includes('@lid')) {
-											// Preserve device ID from original sender
-											const senderDecoded = jidDecode(sender)
-											const deviceId = senderDecoded?.device || 0
-											const lidWithDevice = jidEncode(jidDecode(lidForPN)!.user, 'lid', deviceId)
+										// AGGRESSIVE MIGRATION: Always migrate and delete PN sessions to maintain single encryption layer
+										try {
+											await repository.migrateSession(normalizedSender, lidForPN)
+											sessionMigrated = true
+											logger.info({ from: normalizedSender, to: lidForPN, deviceId }, '🔄 Migrated to LID and will delete PN sessions during decryption')
 											
-											// Check if LID session exists
-											const lidSessionExists = await repository.validateSession(lidWithDevice)
-											if (lidSessionExists.exists) {
-												decryptionJid = lidWithDevice
-												logger.debug({ originalSender: sender, migrationTarget: lidWithDevice }, '🔄 Using migrated LID session for decryption')
-											} else {
-												// LID mapping exists but no session - trigger migration
-												logger.info({ sender, lidMapping: lidWithDevice }, '🔄 LID mapping found but no LID session - triggering migration')
+											// DELETE PN SESSION after successful migration to maintain single encryption layer
+											if (sender.includes('@s.whatsapp.net')) {
 												try {
-													await repository.migrateSession(sender, lidWithDevice)
-													logger.info({ from: sender, to: lidWithDevice }, '🔄 Created LID session via migration during decryption')
-													// Now use the newly created LID session
-													decryptionJid = lidWithDevice
-												} catch (migrationError) {
-													logger.warn({ sender, lidWithDevice, error: migrationError }, 'Failed to migrate to LID session - using PN session')
-													// Keep using PN session as fallback
+													await repository.deleteSession(sender)
+													logger.info({ deletedPNSession: sender, usingLIDSession: lidWithDevice }, '🗑️ Deleted PN session after LID migration during decryption - single encryption layer maintained')
+												} catch (deleteError) {
+													logger.warn({ sender, lidWithDevice, error: deleteError }, 'Failed to delete PN session after LID migration during decryption')
 												}
 											}
+											
+											// Always use LID for decryption after migration
+											decryptionJid = lidWithDevice
+											logger.info({ sender, decryptionJid, sessionMigrated }, '🔐 Using LID for decryption - chain consistency maintained')
+											
+										} catch (migrationError) {
+											logger.warn({ normalizedSender, lidForPN, error: migrationError }, 'Failed to migrate to LID during decryption - falling back to PN')
 										}
-									} catch (error) {
-										logger.warn({ sender, error }, 'Failed to check LID migration during decryption')
+									} else {
+										logger.debug({ sender, normalizedSender }, '📞 No LID mapping found during decryption - using PN as fallback')
 									}
+								} catch (error) {
+									logger.warn({ sender, error }, 'Failed to check LID mapping during decryption')
 								}
 								
 								logger.debug({ sender, decryptionJid, type: e2eType }, 'Decrypting message with determined JID')

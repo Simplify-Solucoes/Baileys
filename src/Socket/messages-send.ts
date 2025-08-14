@@ -322,14 +322,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Normal PN processing - WHATSMEOW PATTERN: Check for LID mapping first (LID priority)
 			jid = jidNormalizedUser(jid)
 			
-			// CRITICAL FIX: Check if this is our own device FIRST to disable auto-migration
+			// LID-FIRST APPROACH: Apply LID priority to ALL devices including own devices
 			const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
 			const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
 			
-			// For own devices, disable auto-migration to prevent ratchet corruption
 			if (isOwnDevice) {
-				disableAutoMigration = true
-				logger.info({ jid, currentUser: currentUserJid }, '🔄 Own device detected: disabling auto-migration to preserve ratchet independence')
+				logger.info({ jid, currentUser: currentUserJid }, '📱 Own device detected: applying LID-first approach with PN cleanup')
 			}
 			
 			// Check if this is an explicit PN device JID
@@ -348,9 +346,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				continue // Skip enumeration for explicit device JIDs
 			}
 			
-			// WHATSMEOW EXACT: Automatic PN→LID migration when LID mapping exists
-			// Even if user typed a phone number, prefer LID when available
-			// BUT: Skip auto-migration if we're doing intentional multi-session delivery OR for own devices
+			// LID-FIRST APPROACH: Automatic PN→LID migration when LID mapping exists
+			// Apply to ALL devices (contacts AND own devices) for single encryption layer consistency
 			if (!disableAutoMigration) {
 				try {
 					const lidMapping = signalRepository.getLIDMappingStore()
@@ -395,28 +392,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
 						const isOwnDevice = jidNormalizedUser(jid) === currentUserJid
 						
-						if (isOwnDevice) {
-							// CRITICAL FIX: For own devices, DON'T auto-migrate to prevent ratchet corruption
-							// Apply the same approach as contacts - let both PN and LID sessions coexist
-							logger.info({ lidForPN, currentUser: currentUserJid, originalJid: jid }, '🔄 Own device: skipping auto-migration to preserve ratchet independence')
-							// DON'T create LID device here, DON'T skip PN processing
-							// Fall through to normal PN processing to maintain dual sessions like contacts
-						} else {
-							// For contact devices, prefer LID session creation when mapping exists
-							logger.info({ lidForPN, contact: jid }, '🔄 Contact has LID mapping but no LID session - will create LID session')
-							
-							// Add LID device for session creation (with correct device ID)
-							const actualDeviceId = originalDecoded?.device || 0
-							deviceResults.push({ 
-								user: lidUser!, 
-								device: actualDeviceId,
-								wireJid: jidEncode(lidUser!, 'lid', actualDeviceId)
-							})
-							
-							// Skip PN processing since we're creating LID session
-							logger.debug({ originalPN: jid, lidJid: lidForPN }, '✅ Added LID device for session creation instead of PN')
-							continue
-						}
+						// LID-FIRST APPROACH: Apply consistent migration to ALL devices (own and contacts)
+						logger.info({ lidForPN, isOwnDevice, jid }, '🔄 LID mapping found - creating LID session and will delete PN session')
+						
+						// Add LID device for session creation (with correct device ID) - applies to both own and contact devices
+						const actualDeviceId = originalDecoded?.device || 0
+						deviceResults.push({ 
+							user: lidUser!, 
+							device: actualDeviceId,
+							wireJid: jidEncode(lidUser!, 'lid', actualDeviceId)
+						})
+						
+						// Skip PN processing since we're creating LID session - applies to both own and contact devices
+						logger.debug({ originalPN: jid, lidJid: lidForPN, isOwnDevice }, '✅ Added LID device for session creation instead of PN - single encryption layer')
+						continue
 					}
 				}
 				} catch (error) {
@@ -676,29 +665,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								const currentUserJid = jidNormalizedUser(authState.creds.me!.id)
 								const isOwnDevice = jidNormalizedUser(normalizedJid) === currentUserJid
 								
-								if (isOwnDevice) {
-									// CRITICAL FIX: For own devices, create BOTH PN and LID sessions
-									// This maintains dual session availability like contacts
-									logger.info({ jid, lidForPN: lidWithDevice, currentUser: currentUserJid, actualDeviceId }, '🔄 Own device: creating BOTH PN and LID sessions')
-									
-									// Add both PN and LID to fetch list (only if not already added)
-									if (!jidsRequiringFetch.includes(jid)) {
-										jidsRequiringFetch.push(jid) // Original PN address
-										logger.debug({ originalJid: jid }, 'Adding PN address to fetch list for own device')
-									}
-									if (!jidsRequiringFetch.includes(lidWithDevice)) {
-										jidsRequiringFetch.push(lidWithDevice) // LID address with correct device ID
-										logger.debug({ lidJid: lidWithDevice }, 'Adding LID address to fetch list for own device')
-									}
-									
-									// Skip setting jidToFetch since we already added both to the fetch list
-									continue
-								} else {
-									// For contact devices, prefer LID session creation when mapping exists
-									logger.info({ jid, lidForPN: lidWithDevice, contact: normalizedJid }, '🔄 Contact has LID mapping - preferring LID session creation')
-									jidToFetch = lidWithDevice // Use LID address with correct device ID
-									hasSession = false // Ensure session creation continues
-								}
+								// LID-FIRST APPROACH: Apply consistent migration to ALL devices (own and contacts)
+								logger.info({ jid, lidForPN: lidWithDevice, isOwnDevice, actualDeviceId }, '🔄 LID mapping found - will create LID session and delete PN session')
+								jidToFetch = lidWithDevice // Use LID address with correct device ID for ALL devices
+								hasSession = false // Ensure session creation continues
 							}
 						} else {
 							logger.debug({ jid }, 'No LID mapping found, will create PN session')
@@ -863,47 +833,61 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 					const bytes = encodeWAMessage(messageToEncrypt)
 					
-					// WHATSMEOW PATTERN: Separate wire identity from encryption identity
+					// LID-FIRST APPROACH: Always check for LID mapping and migrate to single encryption layer
 					// Wire JID = envelope addressing (preserve user's original choice)
-					// Encryption JID = Signal protocol (prefer LID when available)
+					// Encryption JID = Signal protocol (ALWAYS prefer LID, delete PN sessions after migration)
 					let encryptionJid = wireJid
+					let sessionMigrated = false
 					
-					// Check if we should use LID for encryption instead of PN
-					if (wireJid.includes('@s.whatsapp.net')) {
-						try {
-							const lidMapping = signalRepository.getLIDMappingStore()
-							const normalizedWireJid = jidNormalizedUser(wireJid)
-							const lidForPN = await lidMapping.getLIDForPN(normalizedWireJid)
-							
-							if (lidForPN && lidForPN.includes('@lid')) {
-								// CRITICAL: Migrate ALL device sessions when LID mapping exists
-								// This ensures all devices use LID going forward
-								try {
-									await signalRepository.migrateSession(normalizedWireJid, lidForPN)
-									logger.info({ from: normalizedWireJid, to: lidForPN }, '🔄 Migrated ALL device sessions from PN to LID for encryption')
-								} catch (migrationError) {
-									logger.warn({ normalizedWireJid, lidForPN, error: migrationError }, 'Failed to migrate sessions during encryption')
-								}
-								
-								// Preserve device ID from original wire JID
-								const wireDecoded = jidDecode(wireJid)
-								const deviceId = wireDecoded?.device || 0
-								const lidDecoded = jidDecode(lidForPN)
-								const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
-								
-								// Check if LID session exists
-								const lidSessionExists = await signalRepository.validateSession(lidWithDevice)
-								if (lidSessionExists.exists) {
-								// Use LID for encryption (session should exist after migration)
-								encryptionJid = lidWithDevice
-								logger.debug({ wireJid, encryptionJid }, '🔐 Using LID for encryption while preserving PN wire identity')
-								} else {
-									logger.debug({ wireJid, lidWithDevice }, '⚠️ LID mapping found but no LID session - using PN encryption')
-								}
-							}
-						} catch (error) {
-							logger.debug({ wireJid, error }, 'Failed to check LID mapping for encryption identity')
+					// UNIVERSAL LID CHECK: Check for LID mapping regardless of wire JID type
+					try {
+						const lidMapping = signalRepository.getLIDMappingStore()
+						const normalizedWireJid = jidNormalizedUser(wireJid)
+						let lidForPN: string | null = null
+						
+						if (wireJid.includes('@s.whatsapp.net')) {
+							// PN wire JID - check for LID mapping
+							lidForPN = await lidMapping.getLIDForPN(normalizedWireJid)
+						} else if (wireJid.includes('@lid')) {
+							// LID wire JID - already have LID, just need to preserve device ID
+							lidForPN = normalizedWireJid + '@lid'
 						}
+						
+						if (lidForPN && lidForPN.includes('@lid')) {
+							// Preserve device ID from original wire JID
+							const wireDecoded = jidDecode(wireJid)
+							const deviceId = wireDecoded?.device || 0
+							const lidDecoded = jidDecode(lidForPN)
+							const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
+							
+							// AGGRESSIVE MIGRATION: Always migrate and delete PN sessions to maintain single encryption layer
+							try {
+								await signalRepository.migrateSession(normalizedWireJid, lidForPN)
+								sessionMigrated = true
+								logger.info({ from: normalizedWireJid, to: lidForPN, deviceId }, '🔄 Migrated to LID and will delete PN sessions')
+								
+								// DELETE PN SESSION after successful migration to maintain single encryption layer
+								if (wireJid.includes('@s.whatsapp.net')) {
+									try {
+										await signalRepository.deleteSession(wireJid)
+										logger.info({ deletedPNSession: wireJid, usingLIDSession: lidWithDevice }, '🗑️ Deleted PN session after LID migration - single encryption layer maintained')
+									} catch (deleteError) {
+										logger.warn({ wireJid, lidWithDevice, error: deleteError }, 'Failed to delete PN session after LID migration')
+									}
+								}
+								
+								// Always use LID for encryption after migration
+								encryptionJid = lidWithDevice
+								logger.info({ wireJid, encryptionJid, sessionMigrated }, '🔐 Using LID for encryption - chain consistency maintained')
+								
+							} catch (migrationError) {
+								logger.warn({ normalizedWireJid, lidForPN, error: migrationError }, 'Failed to migrate to LID - falling back to PN encryption')
+							}
+						} else {
+							logger.debug({ wireJid, normalizedWireJid }, '📞 No LID mapping found - using PN encryption as fallback')
+						}
+					} catch (error) {
+						logger.debug({ wireJid, error }, 'Failed to check LID mapping for encryption identity')
 					}
 					
 					// SEQUENTIAL ENCRYPTION: Encrypt with the determined encryption identity
