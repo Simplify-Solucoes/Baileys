@@ -1175,14 +1175,32 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 
 					if (!isStatus) {
+						// ADDRESSING MODE: Use group's addressing mode if set, otherwise match conversation context
+						const groupAddressingMode = groupData?.addressingMode || (isLid ? 'lid' : 'pn')
 						additionalAttributes = {
 							...additionalAttributes,
-							addressing_mode: groupData?.addressingMode || 'pn'
+							addressing_mode: groupAddressingMode
 						}
 					}
 
-					const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false, false, isLid ? 'lid' : 'pn')
+					// Use group's addressing mode or conversation context for device enumeration
+					const conversationMode = groupData?.addressingMode === 'lid' ? 'lid' : (isLid ? 'lid' : 'pn')
+					logger.debug({ 
+						group: jid,
+						participantCount: participantsList.length,
+						conversationMode,
+						groupAddressingMode: groupData?.addressingMode
+					}, '📡 Enumerating group participant devices')
+					
+					const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false, false, conversationMode)
 					devices.push(...additionalDevices)
+					
+					logger.debug({ 
+						group: jid,
+						enumeratedDevices: additionalDevices.length,
+						totalDevices: devices.length,
+						deviceSample: additionalDevices.slice(0, 3).map(d => ({ user: d.user, device: d.device, wireJid: d.wireJid }))
+					}, '✅ Group device enumeration complete')
 				}
 
 				const patched = await patchMessageBeforeSending(message)
@@ -1193,8 +1211,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const bytes = encodeWAMessage(patched)
 
-				// WHATSMEOW PATTERN: Use LID identity for group sender key when sending to LID groups
-				const groupSenderIdentity = isLid && meLid ? meLid : meId
+				// GROUP SENDER IDENTITY: Use LID identity for LID groups, PN identity for PN groups
+				// This should match the group's addressing mode and conversation context
+				const groupAddressingMode = groupData?.addressingMode || (isLid ? 'lid' : 'pn')
+				const groupSenderIdentity = (groupAddressingMode === 'lid' && meLid) ? meLid : meId
+				
+				logger.debug({ 
+					group: destinationJid,
+					groupAddressingMode,
+					groupSenderIdentity,
+					participantCount: devices.length
+				}, '🔑 Group encryption with unified addressing')
 				
 				const { ciphertext, senderKeyDistributionMessage } = await signalRepository.encryptGroupMessage({
 					group: destinationJid,
@@ -1204,20 +1231,27 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const senderKeyJids: string[] = []
 				// ensure a connection is established with every device
-				for (const { user, device } of devices) {
-					const jid = jidEncode(user, groupData?.addressingMode === 'lid' ? 'lid' : 's.whatsapp.net', device)
-					const hasKey = !!senderKeyMap[jid]
+				for (const device of devices) {
+					// CRITICAL FIX: Use wireJid from device enumeration instead of rebuilding
+					// This preserves the LID migration results from getUSyncDevices
+					const deviceJid = device.wireJid
+					const hasKey = !!senderKeyMap[deviceJid]
 					if (!hasKey || !!participant) {
-						senderKeyJids.push(jid)
+						senderKeyJids.push(deviceJid)
 						// store that this person has had the sender keys sent to them
-						senderKeyMap[jid] = true
+						senderKeyMap[deviceJid] = true
 					}
 				}
 
 				// if there are some participants with whom the session has not been established
 				// if there are, we re-send the senderkey
 				if (senderKeyJids.length) {
-					logger.debug({ senderKeyJids }, 'sending new sender key')
+					logger.debug({ 
+						senderKeyJids,
+						senderKeyCount: senderKeyJids.length,
+						groupAddressingMode,
+						totalDevices: devices.length
+					}, '🔑 Sending sender keys to group participants')
 
 					const senderKeyMsg: proto.IMessage = {
 						senderKeyDistributionMessage: {
@@ -1226,12 +1260,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 					}
 
+					// CRITICAL: assertSessions will handle bulk LID migration for sender key recipients
 					await assertSessions(senderKeyJids, false)
 
 					const result = await createParticipantNodes(senderKeyJids, senderKeyMsg, extraAttrs)
 					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
 
 					participants.push(...result.nodes)
+					
+					logger.debug({ 
+						senderKeyNodes: result.nodes.length,
+						participantsCount: participants.length 
+					}, '✅ Sender key distribution complete')
 				}
 
 				binaryNodeContent.push({
