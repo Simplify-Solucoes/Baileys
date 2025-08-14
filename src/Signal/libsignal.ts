@@ -696,10 +696,11 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 							await storage.storeSession(toAddrStr, copiedSession)
 							console.log(`💾 Session data deep-copied and migrated for device ${deviceId}`)
 							
-							// CRITICAL FIX: Preserve PN session instead of deleting it
-							// This maintains dual session availability like contacts do
-							// DO NOT DELETE: await auth.keys.set({ session: { [fromAddrStr]: null } })
-							console.log(`✅ Device ${deviceId} migrated successfully (PN session preserved)`)
+							// CRITICAL FIX: Delete PN session for single encryption layer
+							// This ensures only LID sessions exist for optimal performance
+							await auth.keys.set({ session: { [fromAddrStr]: null } })
+							console.log(`🗑️ Deleted PN session for device ${deviceId}: ${fromAddrStr} - single encryption layer maintained`)
+							console.log(`✅ Device ${deviceId} migrated successfully (PN session deleted - single encryption layer)`)
 						} else {
 							console.log(`ℹ️ No session to migrate for device ${deviceId}`)
 						}
