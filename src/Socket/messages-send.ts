@@ -1124,22 +1124,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const lidMapping = signalRepository.getLIDMappingStore()
 				
 				if (!isLid && server === 's.whatsapp.net') {
-					// User provided PN - check if LID session also exists
+					// User provided PN - check if LID session exists for single encryption layer
 					const lidForPN = await lidMapping.getLIDForPN(jid)
-					if (lidForPN && lidForPN.includes('@lid') && !targetSessions.includes(lidForPN)) {
-						targetSessions.push(lidForPN)
-						logger.debug({ originalPN: jid, foundLID: lidForPN }, 'Adding LID session for multi-session delivery')
+					if (lidForPN && lidForPN.includes('@lid')) {
+						// SINGLE ENCRYPTION LAYER: Replace PN with LID, don't add both
+						targetSessions[0] = lidForPN // Replace primary session with LID
+						primarySession = lidForPN   // Update primary session
+						logger.debug({ originalPN: jid, usingLID: lidForPN }, 'Single encryption layer: using LID instead of PN')
 					}
 				} else if (isLid) {
-					// User provided LID - check if PN session also exists  
-					const pnForLID = await lidMapping.getPNForLID(jid)
-					if (pnForLID && pnForLID.includes('@s.whatsapp.net') && !targetSessions.includes(pnForLID)) {
-						targetSessions.push(pnForLID)
-						logger.debug({ originalLID: jid, foundPN: pnForLID }, 'Adding PN session for multi-session delivery')
-					}
+					// User provided LID - use it as-is (no need to check PN)
+					logger.debug({ providedLID: jid }, 'Single encryption layer: using provided LID address')
 				}
 			} catch (error) {
-				logger.debug({ jid, error }, 'Failed to check additional sessions during message sending')
+				logger.debug({ jid, error }, 'Failed to check LID mapping during session determination')
 			}
 		}
 		
