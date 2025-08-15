@@ -379,14 +379,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (useCache) {
 				const devices = userDevicesCache.get(user!) as JidWithDevice[]
 				if (devices) {
-					// Convert cached devices to wire format
+					// Convert cached devices to wire format - use LID if original JID was LID
+					const isLidJid = jid.includes('@lid')
 					const devicesWithWire = devices.map(d => ({
 						...d,
-						wireJid: jidEncode(d.user, 's.whatsapp.net', d.device)
+						wireJid: isLidJid 
+							? jidEncode(d.user, 'lid', d.device)
+							: jidEncode(d.user, 's.whatsapp.net', d.device)
 					}))
 					deviceResults.push(...devicesWithWire)
 
-					logger.debug({ user, deviceCount: devices.length }, '✅ Found cached PN devices')
+					logger.debug({ user, deviceCount: devices.length, usedLid: isLidJid }, '✅ Found cached devices')
 				} else {
 					logger.debug({ jid, user }, '🔍 No cached devices, adding to fetch list')
 					toFetch.push(jid)
@@ -403,6 +406,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		logger.info({ toFetch, fetchCount: toFetch.length }, '🔍 Executing USyncQuery for device enumeration')
+		
+		// Track which users are LID format for later wireJid assignment
+		const requestedLidUsers = new Set<string>()
+		for (const jid of toFetch) {
+			if (jid.includes('@lid')) {
+				const user = jidDecode(jid)?.user
+				if (user) requestedLidUsers.add(user)
+			}
+		}
 		
 		const query = new USyncQuery().withContext('message').withDeviceProtocol()
 
@@ -426,27 +438,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				deviceMap[item.user]?.push(item)
 			}
 
-			// Process each user's devices with LID priority
+			// Process each user's devices - use LID format if originally requested as LID
 			for (const [user, userDevices] of Object.entries(deviceMap)) {
-				const lidMapping = signalRepository.getLIDMappingStore()
-				let lidUser: string | undefined
-				
-				// Check for LID mapping once per user
-				try {
-					const lidForPN = await lidMapping.getLIDForPN(user)
-					if (lidForPN && lidForPN.includes('@lid')) {
-						lidUser = jidDecode(lidForPN)?.user
-						// Migration will be handled by encryption layer automatically
-						logger.debug({ user, lidUser }, 'LID mapping found - will use LID addressing')
-					}
-				} catch (error) {
-					logger.debug({ user, error }, 'No LID mapping found')
-				}
+				const isLidUser = requestedLidUsers.has(user)
 				
 				// Process all devices for this user
 				for (const item of userDevices) {
-					const finalWireJid = lidUser 
-						? jidEncode(lidUser, 'lid', item.device)
+					const finalWireJid = isLidUser
+						? jidEncode(user, 'lid', item.device)
 						: jidEncode(item.user, 's.whatsapp.net', item.device)
 
 					deviceResults.push({
@@ -458,8 +457,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						user: item.user, 
 						device: item.device, 
 						finalWireJid,
-						usedLid: !!lidUser 
-					}, '📱 Processed device with LID priority')
+						usedLid: isLidUser 
+					}, '📱 Processed device with direct addressing')
 				}
 			}
 
