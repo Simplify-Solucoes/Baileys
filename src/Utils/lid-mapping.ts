@@ -4,13 +4,8 @@ import {
     isJidUser,
     jidDecode
 } from '../WABinary'
+import logger from '../Utils/logger'
 
-/**
- * Simple LID-PN mapping store matching whatsmeow's exact behavior
- * Optimized for Redis: Direct keys.set/get (no redundant Map cache)
- * 
- * Key fix: Store only USER portions, copy device IDs from input to output
- */
 export class LIDMappingStore {
     private readonly keys: SignalKeyStoreWithTransaction
     
@@ -19,17 +14,16 @@ export class LIDMappingStore {
     }
 
     /**
-     * Store LID-PN mapping - USER LEVEL (whatsmeow approach)
+     * Store LID-PN mapping - USER LEVEL
      * But we keep track of which device triggered the mapping for migration
      */
     async storeLIDPNMapping(lid: string, pn: string): Promise<void> {
         // Validate inputs
         if (!((isLidUser(lid) && isJidUser(pn)) || (isJidUser(lid) && isLidUser(pn)))) {
-            console.warn(`Invalid LID-PN mapping: ${lid}, ${pn}`)
+            logger.warn(`Invalid LID-PN mapping: ${lid}, ${pn}`)
             return
         }
 
-        // Ensure correct order
         const [lidJid, pnJid] = isLidUser(lid) ? [lid, pn] : [pn, lid]
         
         const lidDecoded = jidDecode(lidJid)
@@ -37,18 +31,15 @@ export class LIDMappingStore {
         
         if (!lidDecoded || !pnDecoded) return
         
-        // WHATSMEOW APPROACH: Store user-level mapping
         const pnUser = pnDecoded.user
         const lidUser = lidDecoded.user
         
         // Keep track of the device that triggered this mapping
         const triggerDevice = pnDecoded.device !== undefined ? pnDecoded.device : 0
         
-        console.log(`📱 Storing USER LID mapping: PN ${pnUser} → LID ${lidUser} (triggered by device ${triggerDevice})`)
+        logger.info(`Storing USER LID mapping: PN ${pnUser} → LID ${lidUser} (triggered by device ${triggerDevice})`)
         
-        // Redis-optimized: Direct storage, no redundant cache
         await this.keys.transaction(async () => {
-            // Store bidirectional USER mapping (whatsmeow style)
             await this.keys.set({
                 'lid-mapping': {
                     [pnUser]: lidUser,                    // "554396160286" -> "102765716062358"
@@ -57,14 +48,11 @@ export class LIDMappingStore {
             })
         })
         
-        // No local cache needed - Redis is primary storage
-        
-        console.log(`✅ USER LID mapping stored: PN ${pnUser} → LID ${lidUser} (whatsmeow approach)`)
+        logger.info(`USER LID mapping stored: PN ${pnUser} → LID ${lidUser}`)
     }
 
     /**
      * Get LID for PN - Returns device-specific LID based on user mapping
-     * WHATSMEOW APPROACH: User-level mapping, but we construct device-specific JID
      */
     async getLIDForPN(pn: string): Promise<string | null> {
         if (!isJidUser(pn)) return null
@@ -78,26 +66,22 @@ export class LIDMappingStore {
         const lidUser = stored[pnUser]
         
         if (!lidUser) {
-            console.log(`🚫 No LID mapping found for PN user ${pnUser}`)
+            logger.warn(`No LID mapping found for PN user ${pnUser}`)
             return null
         }
         
         if (typeof lidUser !== 'string') return null
         
-        // CRITICAL: Construct device-specific LID JID
         // Push the PN device ID to the LID to maintain device separation
         const pnDevice = decoded.device !== undefined ? decoded.device : 0
         const deviceSpecificLid = `${lidUser}:${pnDevice}@lid`
-        
-        // Redis handles all caching - no local cache needed
-        
-        console.log(`🔍 getLIDForPN: ${pn} → ${deviceSpecificLid} (user mapping with device ${pnDevice})`)
+
+        logger.info(`getLIDForPN: ${pn} → ${deviceSpecificLid} (user mapping with device ${pnDevice})`)
         return deviceSpecificLid
     }
 
     /**
      * Get PN for LID - USER LEVEL with device construction
-     * WHATSMEOW APPROACH: User-level reverse lookup
      */
     async getPNForLID(lid: string): Promise<string | null> {
         if (!isLidUser(lid)) return null
@@ -111,15 +95,15 @@ export class LIDMappingStore {
         const pnUser = stored[`${lidUser}_reverse`]
         
         if (!pnUser || typeof pnUser !== 'string') {
-            console.log(`🚫 No reverse mapping found for LID user: ${lidUser}`)
+            logger.warn(`No reverse mapping found for LID user: ${lidUser}`)
             return null
         }
         
         // Construct device-specific PN JID
         const lidDevice = decoded.device !== undefined ? decoded.device : 0
         const pnJid = `${pnUser}:${lidDevice}@s.whatsapp.net`
-        
-        console.log(`✅ Found reverse mapping: ${lid} → ${pnJid}`)
+
+        logger.info(`Found reverse mapping: ${lid} → ${pnJid}`)
         return pnJid
     }
 
@@ -139,27 +123,9 @@ export class LIDMappingStore {
         
         // For now, return false as this method is primarily for validation
         // The main logic should rely on getLIDForPN for specific device lookups
-        console.log(`🚫 isLIDMapped simplified for device-specific: ${lid} → assuming not mapped`)
-        console.log(`   Use getLIDForPN on specific PN devices for accurate checks`)
+        logger.info(`isLIDMapped simplified for device-specific: ${lid} → assuming not mapped`)
+        logger.info(`   Use getLIDForPN on specific PN devices for accurate checks`)
         return false
-    }
-
-    /**
-     * DEPRECATED: Session migration is now handled in libsignal.ts using proper storage interface
-     * This method is kept for compatibility but should not be used
-     */
-    async migrateSession(pnJid: string, lidJid: string): Promise<void> {
-        console.warn(`⚠️ DEPRECATED: migrateSession called on LIDMappingStore. Session migration should use repository.migrateSession() instead.`)
-        console.log(`   Attempted migration: ${pnJid} -> ${lidJid}`)
-        console.log(`   This function is deprecated to avoid conflicts with the main session migration logic.`)
-    }
-
-    /**
-     * DEPRECATED: Local cache removed - Redis is the single source of truth
-     */
-    getFromCache(_pn: string): string | null {
-        // Redis-optimized: All lookups go through Redis for consistency
-        return null
     }
 
     /**
@@ -183,13 +149,6 @@ export class LIDMappingStore {
     }
 
     /**
-     * Set privacy token manager (for compatibility)
-     */
-    setPrivacyTokenManager(_manager: any): void {
-        // Not needed in simple implementation
-    }
-
-    /**
      * Check if JID is LID
      */
     static isLID(jid: string): boolean {
@@ -204,19 +163,11 @@ export class LIDMappingStore {
     }
 
     /**
-     * Clear Redis mappings (if needed)
+     * Fast cache lookup for LID (simplified version for compatibility)
      */
-    async clear() {
-        console.log('Redis-based LID mapping - no local cache to clear')
-    }
-
-    /**
-     * Get stats
-     */
-    getStats() {
-        return {
-            storage: 'Redis-optimized (no local cache)',
-            cacheSize: 0
-        }
+    getFromCache(pn: string): string | null {
+        // This is a simplified sync method for backward compatibility
+        // In production, use getLIDForPN for proper async lookups
+        return null
     }
 }

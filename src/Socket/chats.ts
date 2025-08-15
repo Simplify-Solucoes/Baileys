@@ -671,81 +671,25 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * @param toJid the jid to subscribe to
 	 * @param tcToken optional token for subscription (if not provided, will auto-fetch)
 	 */
-	const presenceSubscribe = async (toJid: string, tcToken?: Buffer) => {
-		let privacyToken = tcToken
-		
-		// Auto-fetch privacy token if not provided (following whatsmeow's SubscribePresence with LID cross-referencing)
-		if (!privacyToken) {
-			try {
-				// We need to access the privacy token manager, but chats.ts doesn't have direct access
-				// Use direct storage lookup with normalized JID (limitation of current architecture)
-				const normalizedJid = jidNormalizedUser(toJid)
-				const { [normalizedJid]: tokenData } = await authState.keys.get('privacy-tokens', [normalizedJid])
-				
-				if (tokenData?.token && Buffer.isBuffer(tokenData.token)) {
-					// Check if token is not expired (24 hours)
-					const now = Date.now()
-					const isExpired = (now - tokenData.timestamp) > (24 * 60 * 60 * 1000)
-					
-					if (!isExpired) {
-						privacyToken = tokenData.token
-						logger.debug({ toJid }, 'using stored privacy token for presence subscription')
-					} else {
-						logger.debug({ toJid }, 'privacy token expired, subscribing without token')
-					}
-				} else {
-					// Try alternative addressing (basic LID-PN lookup)
-					let alternativeJid: string | null = null
-					if (toJid.includes('@lid')) {
-						// LID to PN
-						alternativeJid = toJid.replace('@lid', '@s.whatsapp.net')
-					} else if (toJid.includes('@s.whatsapp.net')) {
-						// PN to LID  
-						alternativeJid = toJid.replace('@s.whatsapp.net', '@lid')
-					}
-					
-					if (alternativeJid) {
-						const altNormalized = jidNormalizedUser(alternativeJid)
-						const { [altNormalized]: altTokenData } = await authState.keys.get('privacy-tokens', [altNormalized])
-						
-						if (altTokenData?.token && Buffer.isBuffer(altTokenData.token)) {
-							const now = Date.now()
-							const isExpired = (now - altTokenData.timestamp) > (24 * 60 * 60 * 1000)
-							
-							if (!isExpired) {
-								privacyToken = altTokenData.token
-								logger.debug({ toJid, alternativeJid }, 'using privacy token from alternative addressing for presence subscription')
-							}
-						}
-					}
-					
-					if (!privacyToken) {
-						logger.debug({ toJid }, 'no privacy token found, subscribing without token')
-					}
-				}
-			} catch (error) {
-				logger.debug({ toJid, error }, 'failed to fetch privacy token, subscribing without token')
-			}
-		}
-		
-		return sendNode({
+	const presenceSubscribe = (toJid: string, tcToken?: Buffer) =>
+		sendNode({
 			tag: 'presence',
 			attrs: {
 				to: toJid,
 				id: generateMessageTag(),
 				type: 'subscribe'
 			},
-			content: privacyToken
+			content: tcToken
 				? [
 						{
 							tag: 'tctoken',
 							attrs: {},
-							content: privacyToken
+							content: tcToken
 						}
 					]
 				: undefined
 		})
-	}
+
 
 	const handlePresenceUpdate = ({ tag, attrs, content }: BinaryNode) => {
 		let presence: PresenceData | undefined

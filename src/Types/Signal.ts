@@ -1,6 +1,5 @@
 import { proto } from '../../WAProto/index.js'
 import type { LIDMappingStore } from '../Utils/lid-mapping'
-import type { PrivacyTokenManager } from '../Signal/privacy-tokens'
 
 type DecryptGroupSignalOpts = {
 	group: string
@@ -78,7 +77,6 @@ export type SignalRepository = {
 	jidToSignalProtocolAddress(jid: string): string
 	storeLIDPNMapping(lid: string, pn: string): Promise<void>
 	getLIDMappingStore(): LIDMappingStore
-	getPrivacyTokenManager(): PrivacyTokenManager
 	migrateSession(fromJid: string, toJid: string): Promise<void>
 	validateSession(jid: string): Promise<{ exists: boolean, reason?: string }>
 	shouldRecreateSession(jid: string, retryCount: number): { shouldRecreate: boolean, reason: string }

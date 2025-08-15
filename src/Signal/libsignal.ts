@@ -6,32 +6,20 @@ import type { SignalRepository } from '../Types/Signal'
 import { generateSignalPubKey } from '../Utils'
 import { jidDecode } from '../WABinary'
 import { LIDMappingStore } from '../Utils/lid-mapping'
-import { PrivacyTokenManager } from './privacy-tokens'
 import type { SenderKeyStore } from './Group/group_cipher'
 import { SenderKeyName } from './Group/sender-key-name'
 import { SenderKeyRecord } from './Group/sender-key-record'
 import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from './Group'
-import type { StorageType } from 'libsignal'
 
 export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository {
 	const lidMapping = new LIDMappingStore(auth.keys as SignalKeyStoreWithTransaction)
-	const storage: StorageType & SenderKeyStore = signalStorage(auth, lidMapping)
-	const privacyTokenManager = new PrivacyTokenManager(auth.keys as SignalKeyStoreWithTransaction, lidMapping)
-	
-	// Link managers
-	lidMapping.setPrivacyTokenManager(privacyTokenManager)
-	
+	const storage = signalStorage(auth, lidMapping)	
 	// Simple operation-level deduplication (5 minutes)
 	const recentMigrations = new LRUCache<string, boolean>({
 		max: 500,
 		ttl: 5 * 60 * 1000
 	})
 	
-	// Session recreation tracking (1 hour)
-	const sessionRecreationHistory = new LRUCache<string, number>({
-		max: 1000,
-		ttl: 60 * 60 * 1000
-	})
 
 	const repository: SignalRepository = {
 		decryptGroupMessage({ group, authorJid, msg }) {
@@ -69,7 +57,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 		async decryptMessage({ jid, type, ciphertext }) {
 			const addr = jidToSignalProtocolAddress(jid)
-			const session = new libsignal.SessionCipher(storage, addr)
+			const session = new libsignal.SessionCipher(storage as any, addr)
 			
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				switch (type) {
@@ -116,7 +104,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			}
 			
 			const addr = jidToSignalProtocolAddress(encryptionJid)
-			const cipher = new libsignal.SessionCipher(storage, addr)
+			const cipher = new libsignal.SessionCipher(storage as any, addr)
 			
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				const { type: sigType, body } = await cipher.encrypt(data)
@@ -149,7 +137,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		},
 
 		async injectE2ESession({ jid, session }) {
-			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
+			const cipher = new libsignal.SessionBuilder(storage as any, jidToSignalProtocolAddress(jid))
 			const bundle: any = {
 				registrationId: session.registrationId,
 				identityKey: Buffer.from(session.identityKey),
@@ -190,10 +178,6 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			return lidMapping
 		},
 
-		getPrivacyTokenManager() {
-			return privacyTokenManager
-		},
-
 		async validateSession(jid: string) {
 			try {
 				const addr = jidToSignalProtocolAddress(jid)
@@ -213,18 +197,11 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			}
 		},
 
-		shouldRecreateSession(jid: string, retryCount: number) {
-			if (retryCount < 2) {
-				return { shouldRecreate: false, reason: 'retry count below threshold' }
-			}
-			
-			const lastRecreation = sessionRecreationHistory.get(jid)
-			if (!lastRecreation || Date.now() - lastRecreation > 60 * 60 * 1000) {
-				sessionRecreationHistory.set(jid, Date.now())
-				return { shouldRecreate: true, reason: 'retry threshold met' }
-			}
-			
-			return { shouldRecreate: false, reason: 'recently recreated' }
+		shouldRecreateSession(_jid: string, retryCount: number) {
+			// Simple threshold - let WhatsApp server dictate when recreation is needed
+			return retryCount >= 2 
+				? { shouldRecreate: true, reason: 'retry threshold met' }
+				: { shouldRecreate: false, reason: 'retry count below threshold' }
 		},
 
 		async recreateSession(jid: string) {
@@ -232,7 +209,6 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				await auth.keys.set({ session: { [addr.toString()]: null } })
-				sessionRecreationHistory.set(jid, Date.now())
 			})
 		},
 
@@ -301,7 +277,6 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 		destroy() {
 			recentMigrations.clear()
-			sessionRecreationHistory.clear()
 		}
 	}
 
@@ -323,7 +298,7 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
 	return new SenderKeyName(group, jidToSignalProtocolAddress(user))
 }
 
-function signalStorage({ creds, keys }: SignalAuthState, lidMapping: LIDMappingStore): StorageType & SenderKeyStore & Record<string, any> {
+function signalStorage({ creds, keys }: SignalAuthState, lidMapping: LIDMappingStore): SenderKeyStore & Record<string, any> {
 	return {
 		loadSession: async (id: string) => {
 			try {
@@ -394,6 +369,7 @@ function signalStorage({ creds, keys }: SignalAuthState, lidMapping: LIDMappingS
 			}
 		},
 		
+		
 		loadSenderKey: async (senderKeyName: SenderKeyName) => {
 			const keyId = senderKeyName.toString()
 			const { [keyId]: key } = await keys.get('sender-key', [keyId])
@@ -418,14 +394,6 @@ function signalStorage({ creds, keys }: SignalAuthState, lidMapping: LIDMappingS
 				privKey: Buffer.from(signedIdentityKey.private),
 				pubKey: Buffer.from(generateSignalPubKey(signedIdentityKey.public))
 			}
-		},
-		
-		storeSignedPreKey: async () => {
-			// Not implemented in current system
-		},
-		
-		removeSignedPreKey: async () => {
-			// Not implemented in current system
 		}
 	}
 }
