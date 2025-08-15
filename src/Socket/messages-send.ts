@@ -545,10 +545,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return deviceResults
 	}
 
-	// Session recreation cache for whatsmeow pattern (separate from retry cache)
-	const sessionRecreateCache = new NodeCache({ stdTTL: 60 * 60 }) // 1 hour TTL
-	
-	// Helper function for whatsmeow session recreation logic
+	// Simplified session recreation logic using signalRepository
 	const shouldRecreateSessionForRetry = async (retryCount: number, participant: string): Promise<{ recreate: boolean, reason: string }> => {
 		// Check if we have a session for this participant
 		const sessionKey = signalRepository.jidToSignalProtocolAddress(participant)
@@ -559,22 +556,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			return { recreate: true, reason: "no session exists with participant" }
 		}
 		
-		// Only recreate after 2+ failed attempts (whatsmeow pattern)
-		if (retryCount < 2) {
-			return { recreate: false, reason: "retry count too low" }
-		}
-		
-		// Rate limiting: only recreate once per hour per participant (whatsmeow pattern)  
-		const sessionRecreateKey = `session-recreate:${participant}`
-		const lastRecreation = sessionRecreateCache.get(sessionRecreateKey) as number
-		const oneHourAgo = Date.now() - (60 * 60 * 1000)
-		
-		if (!lastRecreation || lastRecreation < oneHourAgo) {
-			sessionRecreateCache.set(sessionRecreateKey, Date.now())
-			return { recreate: true, reason: "retry count >= 2 and over an hour since last recreation" }
-		}
-		
-		return { recreate: false, reason: "session recreated recently" }
+		// Use signalRepository's recreation logic (already has rate limiting)
+		const result = signalRepository.shouldRecreateSession(participant, retryCount)
+		return { recreate: result.shouldRecreate, reason: result.reason }
 	}
 
 	const assertSessions = async (jids: string[], force: boolean, retryContext?: { retryCount: number, participant: string }) => {

@@ -14,10 +14,6 @@ import {
 export class LIDMappingStore {
     private readonly keys: SignalKeyStoreWithTransaction
     
-    // Small LRU cache for immediate synchronous access in retry scenarios
-    private readonly syncCache = new Map<string, string>() // Limited cache for sync access
-    private readonly maxCacheSize = 100 // Keep small to avoid memory issues
-    
     constructor(keys: SignalKeyStoreWithTransaction) {
         this.keys = keys
     }
@@ -61,8 +57,7 @@ export class LIDMappingStore {
             })
         })
         
-        // Update sync cache after successful storage (user-level)
-        this.updateSyncCache(pnUser, lidUser)
+        // No local cache needed - Redis is primary storage
         
         console.log(`✅ USER LID mapping stored: PN ${pnUser} → LID ${lidUser} (whatsmeow approach)`)
     }
@@ -94,8 +89,7 @@ export class LIDMappingStore {
         const pnDevice = decoded.device !== undefined ? decoded.device : 0
         const deviceSpecificLid = `${lidUser}:${pnDevice}@lid`
         
-        // Update sync cache for immediate access
-        this.updateSyncCache(pnUser, lidUser)
+        // Redis handles all caching - no local cache needed
         
         console.log(`🔍 getLIDForPN: ${pn} → ${deviceSpecificLid} (user mapping with device ${pnDevice})`)
         return deviceSpecificLid
@@ -161,36 +155,11 @@ export class LIDMappingStore {
     }
 
     /**
-     * Helper to manage small sync cache - USER LEVEL
+     * DEPRECATED: Local cache removed - Redis is the single source of truth
      */
-    private updateSyncCache(pnUser: string, lidUser: string): void {
-        // Keep cache small - remove oldest if needed
-        if (this.syncCache.size >= this.maxCacheSize) {
-            const firstKey = this.syncCache.keys().next().value
-            if (firstKey) {
-                this.syncCache.delete(firstKey)
-            }
-        }
-        // Store user-level mapping
-        this.syncCache.set(pnUser, lidUser)
-    }
-
-    /**
-     * Fast synchronous cache lookup for retry scenarios
-     */
-    getFromCache(pn: string): string | null {
-        if (!isJidUser(pn)) return null
-        
-        const decoded = jidDecode(pn)
-        if (!decoded) return null
-        
-        // User-level cache lookup
-        const lidUser = this.syncCache.get(decoded.user)
-        if (!lidUser) return null
-        
-        // Construct device-specific LID
-        const deviceId = decoded.device !== undefined ? decoded.device : 0
-        return `${lidUser}:${deviceId}@lid`
+    getFromCache(_pn: string): string | null {
+        // Redis-optimized: All lookups go through Redis for consistency
+        return null
     }
 
     /**
@@ -238,8 +207,6 @@ export class LIDMappingStore {
      * Clear Redis mappings (if needed)
      */
     async clear() {
-        // Could clear Redis lid-mapping namespace if needed
-        // For now, this is a no-op since Redis handles cleanup
         console.log('Redis-based LID mapping - no local cache to clear')
     }
 
@@ -249,7 +216,7 @@ export class LIDMappingStore {
     getStats() {
         return {
             storage: 'Redis-optimized (no local cache)',
-            cacheSize: 0 // No cache needed with Redis
+            cacheSize: 0
         }
     }
 }
