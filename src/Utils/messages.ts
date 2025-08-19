@@ -366,7 +366,7 @@ export const generateWAMessageContent = async (
 
 		let urlInfo = 'linkPreview' in message ? message.linkPreview : undefined		
 		if (typeof urlInfo === 'undefined') {
-			urlInfo = await generateLinkPreviewIfRequired(message.text, options.getUrlInfo, options.logger)
+			urlInfo = await generateLinkPreviewIfRequired(message.text || '', options.getUrlInfo, options.logger)
 		}
 
 		if (urlInfo) {
@@ -556,7 +556,7 @@ export const generateWAMessageContent = async (
 		}
 	} else if ('requestPhoneNumber' in message) {
 		m.requestPhoneNumberMessage = {}
-	} else if ('sections' in message || 'buttons' in message) {
+	} else if ('sections' in message || 'buttons' in message || 'templateButtons' in message || 'interactiveButtons' in message || 'shop' in message) {
 		// These are handled later in the function
 	} else {
 		m = await prepareWAMessageMedia(message, options)
@@ -643,6 +643,122 @@ export const generateWAMessageContent = async (
 		}
 
 		m = { listMessage: WAProto.Message.ListMessage.fromObject(listMessage) }
+	}
+
+	if ('templateButtons' in message && !!(message as any).templateButtons) {
+		const hydratedTemplate: proto.Message.TemplateMessage.IHydratedFourRowTemplate = {
+			hydratedButtons: (message as any).templateButtons
+		}
+		
+		if ('text' in message && message.text) {
+			hydratedTemplate.hydratedContentText = message.text
+		} else if ('caption' in message && (message as any).caption) {
+			hydratedTemplate.hydratedContentText = (message as any).caption
+			Object.assign(hydratedTemplate, m)
+		}
+		
+		if ('footer' in message && !!(message as any).footer) {
+			hydratedTemplate.hydratedFooterText = (message as any).footer
+		}
+		
+		const templateMessage: proto.Message.ITemplateMessage = {
+			hydratedTemplate,
+			contextInfo: {
+				...((message as any).contextInfo || {}),
+				...((message as any).mentions ? { mentionedJid: (message as any).mentions } : {})
+			}
+		}
+		
+		m = { templateMessage }
+	}
+
+	if ('interactiveButtons' in message && !!(message as any).interactiveButtons) {
+		const interactiveMessage: proto.Message.IInteractiveMessage = {
+			nativeFlowMessage: {
+				buttons: (message as any).interactiveButtons
+			}
+		}
+		
+		if ('text' in message && typeof message.text === 'string') {
+			interactiveMessage.body = {
+				text: message.text
+			}
+			if ((message as any).title || (message as any).subtitle) {
+				interactiveMessage.header = {
+					title: (message as any).title,
+					subtitle: (message as any).subtitle,
+					hasMediaAttachment: false
+				}
+			}
+		} else if ('caption' in message && (message as any).caption) {
+			interactiveMessage.body = {
+				text: (message as any).caption
+			}
+			
+			interactiveMessage.header = {
+				title: (message as any).title,
+				subtitle: (message as any).subtitle,
+				hasMediaAttachment: (message as any).hasMediaAttachment || false,
+				...m
+			}
+		}
+		
+		if ('footer' in message && !!(message as any).footer) {
+			interactiveMessage.footer = {
+				text: (message as any).footer
+			}
+		}
+		
+		interactiveMessage.contextInfo = {
+			...((message as any).contextInfo || {}),
+			...((message as any).mentions ? { mentionedJid: (message as any).mentions } : {})
+		}
+		
+		m = { interactiveMessage }
+	}
+
+	if ('shop' in message && !!(message as any).shop) {
+		const interactiveMessage: proto.Message.IInteractiveMessage = {
+			shopStorefrontMessage: {
+				surface: (message as any).shop.surface,
+				id: (message as any).shop.id
+			}
+		}
+		
+		if ('text' in message && typeof message.text === 'string') {
+			interactiveMessage.body = {
+				text: message.text
+			}
+			interactiveMessage.header = {
+				title: (message as any).title,
+				subtitle: (message as any).subtitle,
+				hasMediaAttachment: false
+			}
+		} else if ('caption' in message && (message as any).caption) {
+			interactiveMessage.body = {
+				text: (message as any).caption
+			}
+			
+			interactiveMessage.header = {
+				title: (message as any).title,
+				subtitle: (message as any).subtitle,
+				hasMediaAttachment: (message as any).hasMediaAttachment || false,
+				...m
+			}
+		}
+		
+		if ('footer' in message && !!(message as any).footer) {
+			interactiveMessage.footer = {
+				text: (message as any).footer
+			}
+		}
+		
+		interactiveMessage.contextInfo = {
+			...((message as any).contextInfo || {}),
+			...((message as any).mentions ? { mentionedJid: (message as any).mentions } : {})
+		}
+		
+		m = { interactiveMessage }
 	}
 
 	if ('contextInfo' in message && !!message.contextInfo) {

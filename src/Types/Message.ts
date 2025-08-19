@@ -291,6 +291,36 @@ export type AnyRegularMessageContent = (
 			title?: string
 	  } & Mentionable &
 			Contextable)
+	| ({
+			templateButtons: proto.IHydratedTemplateButton[]
+			text?: string
+			caption?: string
+			footer?: string
+	  } & Mentionable &
+			Contextable)
+	| ({
+			interactiveButtons: proto.Message.InteractiveMessage.NativeFlowMessage.INativeFlowButton[]
+			text?: string
+			caption?: string
+			title?: string
+			subtitle?: string
+			footer?: string
+			hasMediaAttachment?: boolean
+	  } & Mentionable &
+			Contextable)
+	| ({
+			shop: {
+				surface: number
+				id: string
+			}
+			text?: string
+			caption?: string
+			title?: string
+			subtitle?: string
+			footer?: string
+			hasMediaAttachment?: boolean
+	  } & Mentionable &
+			Contextable)
 	| {
 			groupInvite: GroupInviteInfo
 	  }
