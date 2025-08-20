@@ -1025,14 +1025,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				extraAttrs['native_flow_name'] = messages?.interactiveResponseMessage?.nativeFlowResponseMessage.name || ''
 			}
 
-			// Add native_flow_name for outgoing interactive messages (payment buttons)
-			if (messages?.interactiveMessage?.nativeFlowMessage?.buttons?.[0]?.name) {
-				const buttonName = messages.interactiveMessage.nativeFlowMessage.buttons[0].name
-				if (buttonName === 'payment_info' || buttonName === 'review_and_pay') {
-					extraAttrs['native_flow_name'] = buttonName === 'review_and_pay' ? 'order_details' : buttonName
-				}
-			}
-
 			if (isNewsletter) {
 				// Patch message if needed, then encode as plaintext
 				const patched = patchMessageBeforeSending ? await patchMessageBeforeSending(message, []) : message
