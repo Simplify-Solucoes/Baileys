@@ -174,6 +174,23 @@ export const decryptMessageNode = (
 	logger: ILogger
 ) => {
 	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
+	
+	// DEBUG: Log biz node structure for interactive messages
+	if (Array.isArray(stanza.content)) {
+		const bizNode = stanza.content.find((node: any) => node.tag === 'biz')
+		if (bizNode) {
+			logger.info({ bizNode: JSON.stringify(bizNode, null, 2) }, '🐛 DEBUG: Raw biz node structure')
+			
+			// Check for interactive content
+			if (bizNode.content && Array.isArray(bizNode.content)) {
+				const interactiveNode = bizNode.content.find((node: any) => node.tag === 'interactive')
+				if (interactiveNode) {
+					logger.info({ interactiveNode: JSON.stringify(interactiveNode, null, 2) }, '🐛 DEBUG: Interactive node structure')
+				}
+			}
+		}
+	}
+	
 	return {
 		fullMessage,
 		category: stanza.attrs.category,
