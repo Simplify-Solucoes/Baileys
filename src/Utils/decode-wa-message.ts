@@ -174,6 +174,19 @@ export const decryptMessageNode = (
 	logger: ILogger
 ) => {
 	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
+	
+	// DEBUG: Log biz node structure to compare iOS vs Android
+	if (Array.isArray(stanza.content)) {
+		const bizNode = stanza.content.find((node: any) => node.tag === 'biz')
+		if (bizNode) {
+			logger.info({ 
+				bizNode: JSON.stringify(bizNode, null, 2),
+				messageId: stanza.attrs.id,
+				from: stanza.attrs.from 
+			}, '🐛 DEBUG: Payment button structure')
+		}
+	}
+	
 	return {
 		fullMessage,
 		category: stanza.attrs.category,
