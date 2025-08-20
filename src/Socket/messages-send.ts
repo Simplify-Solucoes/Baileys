@@ -1505,51 +1505,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			'automated_greeting_message_view_catalog'
 		]
 
-		if (nativeFlow && firstButtonName === 'review_and_pay') {
-			// Use exact structure that working order_details buttons use
+		if (nativeFlow && (firstButtonName === 'review_and_pay' || firstButtonName === 'payment_info')) {
+			// Use simplified structure that Android devices prefer
 			return {
 				tag: 'biz',
-				attrs: {},
-				content: [
-					{
-						tag: 'interactive',
-						attrs: {
-							type: 'native_flow',
-							v: '1'
-						},
-						content: [
-							{
-								tag: 'native_flow',
-								attrs: {
-									name: 'order_details'
-								}
-							}
-						]
-					}
-				]
-			}
-		} else if (nativeFlow && firstButtonName === 'payment_info') {
-			// Use exact structure that working payment buttons use (no "v" attribute on native_flow)
-			return {
-				tag: 'biz',
-				attrs: {},
-				content: [
-					{
-						tag: 'interactive',
-						attrs: {
-							type: 'native_flow',
-							v: '1'
-						},
-						content: [
-							{
-								tag: 'native_flow',
-								attrs: {
-									name: firstButtonName
-								}
-							}
-						]
-					}
-				]
+				attrs: {
+					native_flow_name: firstButtonName === 'review_and_pay' ? 'order_details' : firstButtonName
+				}
 			}
 		} else if (nativeFlow && firstButtonName && nativeFlowSpecials.includes(firstButtonName)) {
 			// Only works for WhatsApp Original, not WhatsApp Business
