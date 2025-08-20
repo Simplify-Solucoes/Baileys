@@ -1244,7 +1244,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							logger.debug({ 
 								target: jid,
 								senderIdentity,
-								conversationType: isLid ? 'lid' : 'pn'
+								conversationType: isLid ? 'lid' : 'pn',
+								messageType: messages ? Object.keys(messages)[0] : 'unknown',
+								buttonType: messages ? getButtonType(messages) : undefined
 							}, 'Enumerating devices with consistent addressing')
 							
 							// Enumerate devices for sender and target with consistent addressing
