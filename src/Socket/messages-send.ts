@@ -1506,11 +1506,27 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		]
 
 		if (nativeFlow && firstButtonName === 'review_and_pay') {
+			// Use exact structure that working order_details buttons use
 			return {
 				tag: 'biz',
-				attrs: {
-					native_flow_name: 'order_details'
-				}
+				attrs: {},
+				content: [
+					{
+						tag: 'interactive',
+						attrs: {
+							type: 'native_flow',
+							v: '1'
+						},
+						content: [
+							{
+								tag: 'native_flow',
+								attrs: {
+									name: 'order_details'
+								}
+							}
+						]
+					}
+				]
 			}
 		} else if (nativeFlow && firstButtonName === 'payment_info') {
 			// Use exact structure that working payment buttons use (no "v" attribute on native_flow)
