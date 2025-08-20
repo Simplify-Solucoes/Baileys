@@ -1513,7 +1513,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 		} else if (nativeFlow && firstButtonName === 'payment_info') {
-			// Use full interactive structure for payment_info to ensure Android compatibility
+			// Use exact structure that working payment buttons use (no "v" attribute on native_flow)
 			return {
 				tag: 'biz',
 				attrs: {},
@@ -1528,7 +1528,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							{
 								tag: 'native_flow',
 								attrs: {
-									v: '9',
 									name: firstButtonName
 								}
 							}
