@@ -1472,6 +1472,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			return 'order'
 		} else if (message.productMessage) {
 			return 'product'
+		} else if (message.interactiveMessage) {
+			return 'interactive'
 		} else if (message.interactiveResponseMessage) {
 			return 'native_flow_response'
 		} else if (/https:\/\/wa\.me\/c\/\d+/.test(message.extendedTextMessage?.text || '')) {
