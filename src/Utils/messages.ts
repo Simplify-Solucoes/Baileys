@@ -16,7 +16,6 @@ import type {
 	AnyMediaMessageContent,
 	AnyMessageContent,
 	DownloadableMessage,
-	MediaType,
 	MessageContentGenerationOptions,
 	MessageGenerationOptions,
 	MessageGenerationOptionsFromContent,
@@ -371,9 +370,9 @@ export const generateWAMessageContent = async (
 	if ('text' in message && !('sections' in message) && !('buttons' in message)) {
 		const extContent = { text: message.text } as WATextMessage
 
-		let urlInfo = message.linkPreview
+		let urlInfo = (message as any).linkPreview
 		if (typeof urlInfo === 'undefined') {
-			urlInfo = await generateLinkPreviewIfRequired(message.text, options.getUrlInfo, options.logger)
+			urlInfo = await generateLinkPreviewIfRequired((message as any).text, options.getUrlInfo, options.logger)
 		}
 
 		if (urlInfo) {
@@ -659,7 +658,7 @@ export const generateWAMessageContent = async (
 			...((message as any).mentions ? { mentionedJid: (message as any).mentions } : {})
 		}
 
-		m = { buttonsMessage: WAProto.Message.ButtonsMessage.fromObject(buttonsMessage) }
+		m = { buttonsMessage: WAProto.Message.ButtonsMessage.create(buttonsMessage) }
 	}
 
 	if ('sections' in message && !!message.sections) {
@@ -677,7 +676,7 @@ export const generateWAMessageContent = async (
 			...((message as any).mentions ? { mentionedJid: (message as any).mentions } : {})
 		}
 
-		m = { listMessage: WAProto.Message.ListMessage.fromObject(listMessage) }
+		m = { listMessage: WAProto.Message.ListMessage.create(listMessage) }
 	}
 
 	if ('templateButtons' in message && !!(message as any).templateButtons) {

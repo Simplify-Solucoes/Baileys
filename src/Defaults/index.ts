@@ -59,7 +59,7 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 			msg?.templateMessage ||
 			msg?.listMessage ||
 			msg?.interactiveMessage?.nativeFlowMessage ||
-			msg?.buttonsResponseMessage ||
+			msg?.buttonsResponseMessage
 			//msg?.listResponseMessage ||
 			//msg?.templateButtonReplyMessage ||
 			//msg?.interactiveResponseMessage
