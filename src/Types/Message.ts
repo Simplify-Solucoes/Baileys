@@ -203,6 +203,38 @@ export type ButtonReplyInfo = {
 	index: number
 }
 
+export type ListButtonReplyInfo = {
+	title: string
+	description?: string
+	rowId: string
+}
+
+export type InteractiveButtonReplyInfo = {
+	displayText: string
+	nativeFlows: {
+		name: string
+		paramsJson: string
+		version: number
+	}
+}
+
+export type ListSection = {
+	title: string
+	rows: {
+		title: string
+		rowId: string
+		description?: string
+	}[]
+}
+
+export type Button = {
+	buttonId: string
+	buttonText: {
+		displayText: string
+	}
+	type: number
+}
+
 export type GroupInviteInfo = {
 	inviteCode: string
 	inviteExpiration: number
@@ -215,58 +247,116 @@ export type WASendableProduct = Omit<proto.Message.ProductMessage.IProductSnapsh
 	productImage: WAMediaUpload
 }
 
-export type AnyRegularMessageContent = (
+export type AnyRegularMessageContent =
 	| ({
 			text: string
 			linkPreview?: WAUrlInfo | null
 	  } & Mentionable &
 			Contextable &
-			Editable)
-	| AnyMediaMessageContent
-	| { event: EventMessageOptions }
+			Editable &
+			ViewOnce)
+	| (AnyMediaMessageContent & ViewOnce)
+	| ({ event: EventMessageOptions } & ViewOnce)
 	| ({
 			poll: PollMessageOptions
 	  } & Mentionable &
 			Contextable &
-			Editable)
-	| {
+			Editable &
+			ViewOnce)
+	| ({
 			contacts: {
 				displayName?: string
 				contacts: proto.Message.IContactMessage[]
 			}
-	  }
-	| {
+	  } & ViewOnce)
+	| ({
 			location: WALocationMessage
-	  }
-	| { react: proto.Message.IReactionMessage }
-	| {
+	  } & ViewOnce)
+	| ({ react: proto.Message.IReactionMessage } & ViewOnce)
+	| ({
 			buttonReply: ButtonReplyInfo
 			type: 'template' | 'plain'
-	  }
-	| {
+	  } & ViewOnce)
+	| ({
+			buttonReply: ListButtonReplyInfo
+			type: 'list'
+	  } & ViewOnce)
+	| ({
+			buttonReply: InteractiveButtonReplyInfo
+			type: 'interactive'
+	  } & ViewOnce)
+	| ({
+			text: string
+			title: string
+			buttonText: string
+			footer?: string
+			sections: ListSection[]
+	  } & Mentionable &
+			Contextable &
+			ViewOnce)
+	| ({
+			text: string
+			buttons: Button[]
+			footer?: string
+			title?: string
+	  } & Mentionable &
+			Contextable &
+			ViewOnce)
+	| ({
+			templateButtons: proto.IHydratedTemplateButton[]
+			text?: string
+			caption?: string
+			footer?: string
+	  } & Mentionable &
+			Contextable &
+			ViewOnce)
+	| ({
+			interactiveButtons: proto.Message.InteractiveMessage.NativeFlowMessage.INativeFlowButton[]
+			text?: string
+			caption?: string
+			title?: string
+			subtitle?: string
+			footer?: string
+			hasMediaAttachment?: boolean
+	  } & Mentionable &
+			Contextable &
+			ViewOnce)
+	| ({
+			shop: {
+				surface: number
+				id: string
+			}
+			text?: string
+			caption?: string
+			title?: string
+			subtitle?: string
+			footer?: string
+			hasMediaAttachment?: boolean
+	  } & Mentionable &
+			Contextable &
+			ViewOnce)
+	| ({
 			groupInvite: GroupInviteInfo
-	  }
-	| {
+	  } & ViewOnce)
+	| ({
 			listReply: Omit<proto.Message.IListResponseMessage, 'contextInfo'>
-	  }
-	| {
+	  } & ViewOnce)
+	| ({
 			pin: WAMessageKey
 			type: proto.PinInChat.Type
 			/**
 			 * 24 hours, 7 days, 30 days
 			 */
 			time?: 86400 | 604800 | 2592000
-	  }
-	| {
+	  } & ViewOnce)
+	| ({
 			product: WASendableProduct
 			businessOwnerJid?: string
 			body?: string
 			footer?: string
-	  }
-	| SharePhoneNumber
-	| RequestPhoneNumber
-) &
-	ViewOnce
+	  } & ViewOnce)
+	| (SharePhoneNumber & ViewOnce)
+	| (RequestPhoneNumber & ViewOnce)
 
 export type AnyMessageContent =
 	| AnyRegularMessageContent

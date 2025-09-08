@@ -60,7 +60,31 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	auth: undefined as unknown as AuthenticationState,
 	markOnlineOnConnect: true,
 	syncFullHistory: true,
-	patchMessageBeforeSending: msg => msg,
+	patchMessageBeforeSending: msg => {
+		// Apply the MD patch for interactive messages (buttons, lists, etc.)
+		if (
+			msg?.buttonsMessage ||
+			msg?.templateMessage ||
+			msg?.listMessage ||
+			msg?.interactiveMessage?.nativeFlowMessage ||
+			msg?.buttonsResponseMessage
+			//msg?.listResponseMessage ||
+			//msg?.templateButtonReplyMessage ||
+			//msg?.interactiveResponseMessage
+		) {
+			return {
+						messageContextInfo: {
+							deviceListMetadataVersion: 2,
+							deviceListMetadata: {
+								recipientKeyHash: Buffer.from([0xb8, 0xbe, 0x8f, 0xa2, 0xf8, 0xe9, 0xa1, 0x7a, 0xdf, 0xc4]).toString('base64'),
+								recipientTimestamp: Math.floor(Date.now() / 1000).toString()
+							}
+						},
+						...msg
+			} as proto.IMessage
+		}
+		return msg
+	},
 	shouldSyncHistoryMessage: () => true,
 	shouldIgnoreJid: () => false,
 	linkPreviewImageThumbnailWidth: 192,

@@ -1,7 +1,9 @@
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
+import { randomBytes } from 'crypto'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
+
 import type {
 	AnyMessageContent,
 	MediaConnInfo,
@@ -17,6 +19,7 @@ import {
 	assertMediaContent,
 	bindWaitForEvent,
 	decryptMediaRetryData,
+	delay,
 	encodeNewsletterMessage,
 	encodeSignedDeviceIdentity,
 	encodeWAMessage,
@@ -25,6 +28,7 @@ import {
 	generateMessageIDV2,
 	generateParticipantHashV2,
 	generateWAMessage,
+	generateWAMessageFromContent,
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
@@ -40,18 +44,22 @@ import {
 	type BinaryNode,
 	type BinaryNodeAttributes,
 	type FullJid,
+	getBinaryFilteredBizBot,
+	getBinaryFilteredButtons,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidGroup,
+	isJidNewsletter,
 	isLidUser,
 	isPnUser,
 	jidDecode,
 	jidEncode,
 	jidNormalizedUser,
 	type JidWithDevice,
-	S_WHATSAPP_NET
+	S_WHATSAPP_NET,
+	STORIES_JID
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
@@ -95,6 +103,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	// Initialize message retry manager if enabled
 	const messageRetryManager = enableRecentMessageCache ? new MessageRetryManager(logger, maxMsgRetryCount) : null
+
+	// Helper function to check if JID is a user (PN or LID)
+	const isJidUser = (jid: string | undefined) => isPnUser(jid) || isLidUser(jid)
 
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
@@ -619,9 +630,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		await authState.keys.transaction(async () => {
+			let didPushAdditional = false
+			const messages = normalizeMessageContent(message)
+			const buttonType = messages ? getButtonType(messages) : undefined
+
 			const mediaType = getMediaType(message)
 			if (mediaType) {
 				extraAttrs['mediatype'] = mediaType
+			}
+
+			if (
+				messages?.pinInChatMessage ||
+				messages?.keepInChatMessage ||
+				message.reactionMessage ||
+				message.protocolMessage?.editedMessage
+			) {
+				extraAttrs['decrypt-fail'] = 'hide'
+			}
+
+			if (messages?.interactiveResponseMessage?.nativeFlowResponseMessage) {
+				extraAttrs['native_flow_name'] = messages?.interactiveResponseMessage?.nativeFlowResponseMessage.name || ''
 			}
 
 			if (isNewsletter) {
@@ -953,7 +981,37 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 			}
 
-			if (additionalNodes && additionalNodes.length > 0) {
+			if (!isNewsletter && buttonType && messages) {
+				const buttonsNode = getButtonArgs(messages)
+				const filteredButtons = getBinaryFilteredButtons(additionalNodes ? additionalNodes : [])
+
+				if (filteredButtons) {
+					;(stanza.content as BinaryNode[]).push(...(additionalNodes || []))
+					didPushAdditional = true
+				} else {
+					;(stanza.content as BinaryNode[]).push(buttonsNode)
+				}
+			}
+
+			if (isJidUser(destinationJid)) {
+				const botNode: BinaryNode = {
+					tag: 'bot',
+					attrs: {
+						biz_bot: '1'
+					}
+				}
+
+				const filteredBizBot = getBinaryFilteredBizBot(additionalNodes ? additionalNodes : [])
+
+				if (filteredBizBot) {
+					;(stanza.content as BinaryNode[]).push(...(additionalNodes || []))
+					didPushAdditional = true
+				} else {
+					;(stanza.content as BinaryNode[]).push(botNode)
+				}
+			}
+
+			if (!didPushAdditional && additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
 			}
 
@@ -1015,11 +1073,367 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			return 'product'
 		} else if (message.interactiveResponseMessage) {
 			return 'native_flow_response'
-		} else if (message.groupInviteMessage) {
+		} else if (/https:\/\/wa\.me\/c\/\d+/.test(message.extendedTextMessage?.text || '')) {
+			return 'cataloglink'
+		} else if (/https:\/\/wa\.me\/p\/\d+\/\d+/.test(message.extendedTextMessage?.text || '')) {
+			return 'productlink'
+		} else if (message.extendedTextMessage?.matchedText || message.groupInviteMessage) {
 			return 'url'
 		}
 
 		return ''
+	}
+
+	const getButtonType = (message: proto.IMessage) => {
+		if (message.listMessage) {
+			return 'list'
+		} else if (message.buttonsMessage) {
+			return 'buttons'
+		} else if (message.interactiveMessage?.nativeFlowMessage) {
+			return 'native_flow'
+		}
+	}
+
+	const getButtonArgs = (message: proto.IMessage): BinaryNode => {
+		const nativeFlow = message.interactiveMessage?.nativeFlowMessage
+		const firstButtonName = nativeFlow?.buttons?.[0]?.name
+		const nativeFlowSpecials = [
+			'mpm',
+			'cta_catalog',
+			'send_location',
+			'call_permission_request',
+			'wa_payment_transaction_details',
+			'automated_greeting_message_view_catalog'
+		]
+
+		const commonAttrs = {
+			actual_actors: '2',
+			host_storage: '2',
+			privacy_mode_ts: unixTimestampSeconds().toString()
+		}
+
+		const qualityControlNode = {
+			tag: 'quality_control' as const,
+			attrs: {
+				source_type: 'third_party'
+			}
+		}
+
+		if (nativeFlow && (firstButtonName === 'review_and_pay' || firstButtonName === 'payment_info')) {
+			return {
+				tag: 'biz',
+				attrs: {
+					native_flow_name: firstButtonName === 'review_and_pay' ? 'order_details' : firstButtonName
+				}
+			}
+		} else if (nativeFlow && firstButtonName && nativeFlowSpecials.includes(firstButtonName)) {
+			// Only works for WhatsApp Original, not WhatsApp Business
+			return {
+				tag: 'biz',
+				attrs: commonAttrs,
+				content: [
+					{
+						tag: 'interactive',
+						attrs: {
+							type: 'native_flow',
+							v: '1'
+						},
+						content: [
+							{
+								tag: 'native_flow',
+								attrs: {
+									v: '2',
+									name: firstButtonName
+								}
+							}
+						]
+					},
+					qualityControlNode
+				]
+			}
+		} else if (nativeFlow || message.buttonsMessage) {
+			// It works for whatsapp original and whatsapp business
+			return {
+				tag: 'biz',
+				attrs: commonAttrs,
+				content: [
+					{
+						tag: 'interactive',
+						attrs: {
+							type: 'native_flow',
+							v: '1'
+						},
+						content: [
+							{
+								tag: 'native_flow',
+								attrs: {
+									v: '9',
+									name: 'mixed'
+								}
+							}
+						]
+					},
+					qualityControlNode
+				]
+			}
+		} else if (message.listMessage) {
+			return {
+				tag: 'biz',
+				attrs: commonAttrs,
+				content: [
+					{
+						tag: 'list',
+						attrs: {
+							v: '2',
+							type: 'product_list'
+						}
+					},
+					qualityControlNode
+				]
+			}
+		} else {
+			return {
+				tag: 'biz',
+				attrs: commonAttrs
+			}
+		}
+	}
+
+	const sendStatusMentions = async (content: AnyMessageContent, jids: string[] = []) => {
+		const userJid = jidNormalizedUser(authState.creds.me!.id)
+		const allUsers = new Set<string>()
+		allUsers.add(userJid)
+
+		for (const id of jids) {
+			const isGroup = isJidGroup(id)
+			const isPrivate = isJidUser(id)
+
+			if (isGroup) {
+				try {
+					const metadata = (cachedGroupMetadata && (await cachedGroupMetadata(id))) || (await groupMetadata(id))
+					const participants = metadata.participants.map(p => jidNormalizedUser(p.id))
+					participants.forEach(jid => allUsers.add(jid))
+				} catch (error) {
+					logger.error(`Error getting metadata for group ${id}: ${error}`)
+				}
+			} else if (isPrivate) {
+				allUsers.add(jidNormalizedUser(id))
+			}
+		}
+
+		const uniqueUsers = Array.from(allUsers)
+		const getRandomHexColor = () =>
+			'#' +
+			Math.floor(Math.random() * 16777215)
+				.toString(16)
+				.padStart(6, '0')
+
+		const isMedia = 'image' in content || 'video' in content || 'audio' in content
+		const isAudio = !!(content as any).audio
+
+		const messageContent = { ...content }
+
+		if (isMedia && !isAudio) {
+			if ((messageContent as any).text) {
+				;(messageContent as any).caption = (messageContent as any).text
+				delete (messageContent as any).text
+			}
+
+			delete (messageContent as any).ptt
+			delete (messageContent as any).font
+			delete (messageContent as any).backgroundColor
+			delete (messageContent as any).textColor
+		}
+
+		if (isAudio) {
+			delete (messageContent as any).text
+			delete (messageContent as any).caption
+			delete (messageContent as any).font
+			delete (messageContent as any).textColor
+		}
+
+		const font = !isMedia ? (content as any).font || Math.floor(Math.random() * 9) : undefined
+		const textColor = !isMedia ? (content as any).textColor || getRandomHexColor() : undefined
+		const backgroundColor = !isMedia || isAudio ? (content as any).backgroundColor || getRandomHexColor() : undefined
+		const ptt = isAudio ? (typeof (content as any).ptt === 'boolean' ? (content as any).ptt : true) : undefined
+
+		let msg: any
+		let mediaHandle: string | undefined
+		try {
+			msg = await generateWAMessage(STORIES_JID, messageContent, {
+				logger,
+				userJid,
+				getUrlInfo: (text: string) =>
+					getUrlInfo(text, {
+						thumbnailWidth: linkPreviewImageThumbnailWidth,
+						fetchOpts: { timeout: 3000, ...(httpRequestOptions || {}) },
+						logger,
+						uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
+					}),
+				upload: async (encFilePath: string, opts: any) => {
+					const up = await waUploadToServer(encFilePath, { ...opts })
+					mediaHandle = up.mediaUrl
+					return up
+				},
+				mediaCache: config.mediaCache,
+				options: config.options,
+				font,
+				textColor,
+				backgroundColor,
+				ptt
+			} as any)
+		} catch (error) {
+			logger.error(`Error generating message: ${error}`)
+			throw error
+		}
+
+		await relayMessage(STORIES_JID, msg.message, {
+			messageId: msg.key.id!,
+			statusJidList: uniqueUsers,
+			additionalNodes: [
+				{
+					tag: 'meta',
+					attrs: {},
+					content: [
+						{
+							tag: 'mentioned_users',
+							attrs: {},
+							content: jids.map(jid => ({
+								tag: 'to',
+								attrs: { jid: jidNormalizedUser(jid) }
+							}))
+						}
+					]
+				}
+			]
+		})
+
+		for (const id of jids) {
+			try {
+				const normalizedId = jidNormalizedUser(id)
+				const isPrivate = isJidUser(normalizedId)
+				const type = isPrivate ? 'statusMentionMessage' : 'groupStatusMentionMessage'
+
+				const protocolMessage = {
+					[type]: {
+						message: {
+							protocolMessage: {
+								key: msg.key,
+								type: 25
+							}
+						}
+					},
+					messageContextInfo: {
+						messageSecret: randomBytes(32)
+					}
+				}
+
+				const statusMsg = await generateWAMessageFromContent(normalizedId, protocolMessage, { userJid })
+
+				await relayMessage(normalizedId, statusMsg.message!, {
+					additionalNodes: [
+						{
+							tag: 'meta',
+							attrs: isPrivate ? { is_status_mention: 'true' } : { is_group_status_mention: 'true' }
+						}
+					]
+				})
+
+				await delay(2000)
+			} catch (error) {
+				logger.error(`Error sending to ${id}: ${error}`)
+			}
+		}
+
+		return msg
+	}
+
+	const sendAlbumMessage = async (
+		jid: string,
+		medias: AnyMessageContent[],
+		options: MiscMessageGenerationOptions = {}
+	) => {
+		const userJid = authState.creds.me!.id
+
+		for (const media of medias) {
+			if (!('image' in media) && !('video' in media)) throw new TypeError(`medias[i] must have image or video property`)
+		}
+
+		const time = (options as any).delay || 500
+		delete (options as any).delay
+
+		const album = await generateWAMessageFromContent(
+			jid,
+			{
+				albumMessage: {
+					expectedImageCount: medias.filter(media => 'image' in media).length,
+					expectedVideoCount: medias.filter(media => 'video' in media).length,
+					...options
+				}
+			} as any,
+			{ userJid, ...options }
+		)
+
+		await relayMessage(jid, album.message!, { messageId: album.key.id! })
+
+		let mediaHandle: string | undefined
+		let msg: any
+
+		for (const i in medias) {
+			const media = medias[i]
+			if (!media) continue
+
+			if ('image' in media) {
+				msg = await generateWAMessage(
+					jid,
+					{
+						...media,
+						...options
+					},
+					{
+						userJid,
+						upload: async (encFilePath: string, opts: any) => {
+							const up = await waUploadToServer(encFilePath, { ...opts, newsletter: isJidNewsletter(jid) })
+							mediaHandle = up.mediaUrl // Fixed: use mediaUrl instead of handle
+							return up
+						},
+						...options
+					}
+				)
+			} else if ('video' in media) {
+				msg = await generateWAMessage(
+					jid,
+					{
+						...media,
+						...options
+					},
+					{
+						userJid,
+						upload: async (encFilePath: string, opts: any) => {
+							const up = await waUploadToServer(encFilePath, { ...opts, newsletter: isJidNewsletter(jid) })
+							mediaHandle = up.mediaUrl // Fixed: use mediaUrl instead of handle
+							return up
+						},
+						...options
+					}
+				)
+			}
+
+			if (msg) {
+				msg.message!.messageContextInfo = {
+					messageSecret: randomBytes(32),
+					messageAssociation: {
+						associationType: 1,
+						parentMessageKey: album.key
+					}
+				}
+			}
+
+			await relayMessage(jid, msg!.message, { messageId: msg!.key.id! })
+			await delay(time)
+		}
+
+		return album
 	}
 
 	const getPrivacyTokens = async (jids: string[]) => {
@@ -1068,6 +1482,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		sendPeerDataOperationMessage,
 		createParticipantNodes,
 		getUSyncDevices,
+		sendStatusMentions,
+		sendAlbumMessage,
 		messageRetryManager,
 		updateMediaMessage: async (message: WAMessage) => {
 			const content = assertMediaContent(message.message)
