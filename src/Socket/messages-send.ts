@@ -993,23 +993,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
-			if (isJidUser(destinationJid)) {
-				const botNode: BinaryNode = {
-					tag: 'bot',
-					attrs: {
-						biz_bot: '1'
-					}
-				}
+			// if (isJidUser(destinationJid)) {
+			// 	const botNode: BinaryNode = {
+			// 		tag: 'bot',
+			// 		attrs: {
+			// 			biz_bot: '1'
+			// 		}
+			// 	}
 
-				const filteredBizBot = getBinaryFilteredBizBot(additionalNodes ? additionalNodes : [])
+			// 	const filteredBizBot = getBinaryFilteredBizBot(additionalNodes ? additionalNodes : [])
 
-				if (filteredBizBot) {
-					;(stanza.content as BinaryNode[]).push(...(additionalNodes || []))
-					didPushAdditional = true
-				} else {
-					;(stanza.content as BinaryNode[]).push(botNode)
-				}
-			}
+			// 	if (filteredBizBot) {
+			// 		;(stanza.content as BinaryNode[]).push(...(additionalNodes || []))
+			// 		didPushAdditional = true
+			// 	} else {
+			// 		;(stanza.content as BinaryNode[]).push(botNode)
+			// 	}
+			// }
 
 			if (!didPushAdditional && additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
