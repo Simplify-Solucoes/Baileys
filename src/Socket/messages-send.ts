@@ -394,6 +394,36 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return deviceResults
 	}
 
+	/**
+	 * Update Member Label
+	 */
+	const updateMemberLabel = (jid: string, memberLabel: string) => {
+		return relayMessage(
+			jid,
+			{
+				protocolMessage: {
+					type: proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE,
+					memberLabel: {
+						label: memberLabel?.slice(0, 30),
+						labelTimestamp: unixTimestampSeconds()
+					}
+				}
+			},
+			{
+				additionalNodes: [
+					{
+						tag: 'meta',
+						attrs: {
+							tag_reason: 'user_update',
+							appdata: 'member_tag'
+						},
+						content: undefined
+					}
+				]
+			}
+		)
+	}
+
 	const assertSessions = async (jids: string[], force?: boolean) => {
 		let didFetchNewSession = false
 		const uniqueJids = [...new Set(jids)] // Deduplicate JIDs
@@ -1485,6 +1515,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		sendStatusMentions,
 		sendAlbumMessage,
 		messageRetryManager,
+		updateMemberLabel,
 		updateMediaMessage: async (message: WAMessage) => {
 			const content = assertMediaContent(message.message)
 			const mediaKey = content.mediaKey!
