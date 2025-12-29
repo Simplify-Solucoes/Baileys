@@ -9,20 +9,21 @@ import {
 } from '../Defaults'
 import type { AuthenticationCreds, SignalCreds, SocketConfig } from '../Types'
 import { type BinaryNode, getBinaryNodeChild, jidDecode, S_WHATSAPP_NET } from '../WABinary'
+import { getBrowserInfo } from './browser-utils'
 import { Curve, hmacSign } from './crypto'
 import { encodeBigEndian } from './generics'
 import { createSignalIdentity } from './signal'
 
 const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
+	const { platform } = getBrowserInfo(config.browser[1])
+
 	return {
 		appVersion: {
 			primary: config.version[0],
 			secondary: config.version[1],
 			tertiary: config.version[2]
 		},
-		platform: config.browser[1].toLocaleLowerCase().includes('android')
-			? proto.ClientPayload.UserAgent.Platform.ANDROID
-			: proto.ClientPayload.UserAgent.Platform.WEB,
+		platform,
 		releaseChannel: proto.ClientPayload.UserAgent.ReleaseChannel.RELEASE,
 		osVersion: '0.1',
 		device: 'Desktop',
@@ -60,7 +61,8 @@ const getClientPayload = (config: SocketConfig) => {
 		userAgent: getUserAgent(config)
 	}
 
-	if (!config.browser[1].toLocaleLowerCase().includes('android')) {
+	const { isMobile } = getBrowserInfo(config.browser[1])
+	if (!isMobile) {
 		payload.webInfo = getWebInfo(config)
 	}
 
@@ -81,14 +83,16 @@ export const generateLoginNode = (userJid: string, config: SocketConfig): proto.
 	return proto.ClientPayload.fromObject(payload)
 }
 
+const PLATFORM_OVERRIDES: Record<string, proto.DeviceProps.PlatformType> = {
+	ANDROID: proto.DeviceProps.PlatformType.ANDROID_PHONE,
+	IPHONE: proto.DeviceProps.PlatformType.IOS_PHONE
+}
+
 const getPlatformType = (platform: string): proto.DeviceProps.PlatformType => {
 	const platformType = platform.toUpperCase()
-	if (platformType === 'ANDROID') {
-		return proto.DeviceProps.PlatformType.ANDROID_PHONE
-	}
-
 	return (
-		proto.DeviceProps.PlatformType[platformType as keyof typeof proto.DeviceProps.PlatformType] ||
+		PLATFORM_OVERRIDES[platformType] ??
+		proto.DeviceProps.PlatformType[platformType as keyof typeof proto.DeviceProps.PlatformType] ??
 		proto.DeviceProps.PlatformType.CHROME
 	)
 }
