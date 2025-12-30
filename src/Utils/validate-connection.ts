@@ -14,8 +14,23 @@ import { Curve, hmacSign } from './crypto'
 import { encodeBigEndian } from './generics'
 import { createSignalIdentity } from './signal'
 
+const BUSINESS_UA_PLATFORM_MAP: Record<string, proto.ClientPayload.UserAgent.Platform> = {
+	smbi: proto.ClientPayload.UserAgent.Platform.SMB_IOS,
+	smba: proto.ClientPayload.UserAgent.Platform.SMB_ANDROID
+}
+
+const getUserAgentPlatform = (config: SocketConfig): proto.ClientPayload.UserAgent.Platform => {
+	const { platform, isMobile } = getBrowserInfo(config.browser[1])
+	if (!isMobile) {
+		return platform
+	}
+
+	const authPlatform = config.auth?.creds?.platform?.toLowerCase()
+	return (authPlatform && BUSINESS_UA_PLATFORM_MAP[authPlatform]) || platform
+}
+
 const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
-	const { platform } = getBrowserInfo(config.browser[1])
+	const platform = getUserAgentPlatform(config)
 
 	return {
 		appVersion: {
