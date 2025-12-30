@@ -22,13 +22,22 @@ export const Browsers: BrowsersMap = {
 	baileys: browser => ['Baileys', browser, '6.5.0'],
 	windows: browser => ['Windows', browser, '10.0.22631'],
 	android: browser => [browser, 'Android', ''],
+	androidbusiness: browser => [browser, 'AndroidBusiness', ''],
 	iphone: browser => [browser, 'iPhone', ''],
+	iphonebusiness: browser => [browser, 'iPhoneBusiness', ''],
 	/** The appropriate browser based on your OS & release */
 	appropriate: browser => [PLATFORM_MAP[platform()] || 'Ubuntu', browser, release()]
 }
 
 export const getPlatformId = (browser: string) => {
-	const platformType = proto.DeviceProps.PlatformType[browser.toUpperCase() as any]
+	const platformKey = browser.toUpperCase()
+	const platformType =
+		{
+			ANDROID: proto.DeviceProps.PlatformType.ANDROID_PHONE,
+			IPHONE: proto.DeviceProps.PlatformType.IOS_PHONE,
+			ANDROIDBUSINESS: proto.DeviceProps.PlatformType.ANDROID_PHONE,
+			IPHONEBUSINESS: proto.DeviceProps.PlatformType.IOS_PHONE
+		}[platformKey] ?? proto.DeviceProps.PlatformType[platformKey as any]
 	return platformType ? platformType.toString() : '1' //chrome
 }
 
@@ -39,6 +48,12 @@ export type BrowserInfo = {
 
 export const getBrowserInfo = (browser: string): BrowserInfo => {
 	const browserType = browser.toLowerCase()
+	if (browserType.includes('androidbusiness')) {
+		return { platform: proto.ClientPayload.UserAgent.Platform.SMB_ANDROID, isMobile: true }
+	}
+	if (browserType.includes('iphonebusiness')) {
+		return { platform: proto.ClientPayload.UserAgent.Platform.SMB_IOS, isMobile: true }
+	}
 	if (browserType.includes('android')) {
 		return { platform: proto.ClientPayload.UserAgent.Platform.ANDROID, isMobile: true }
 	}

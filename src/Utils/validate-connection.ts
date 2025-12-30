@@ -14,23 +14,8 @@ import { Curve, hmacSign } from './crypto'
 import { encodeBigEndian } from './generics'
 import { createSignalIdentity } from './signal'
 
-const BUSINESS_UA_PLATFORM_MAP: Record<string, proto.ClientPayload.UserAgent.Platform> = {
-	smbi: proto.ClientPayload.UserAgent.Platform.SMB_IOS,
-	smba: proto.ClientPayload.UserAgent.Platform.SMB_ANDROID
-}
-
-const getUserAgentPlatform = (config: SocketConfig): proto.ClientPayload.UserAgent.Platform => {
-	const { platform, isMobile } = getBrowserInfo(config.browser[1])
-	if (!isMobile) {
-		return platform
-	}
-
-	const authPlatform = config.auth?.creds?.platform?.toLowerCase()
-	return (authPlatform && BUSINESS_UA_PLATFORM_MAP[authPlatform]) || platform
-}
-
 const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
-	const platform = getUserAgentPlatform(config)
+	const { platform } = getBrowserInfo(config.browser[1])
 
 	return {
 		appVersion: {
@@ -100,7 +85,9 @@ export const generateLoginNode = (userJid: string, config: SocketConfig): proto.
 
 const PLATFORM_OVERRIDES: Record<string, proto.DeviceProps.PlatformType> = {
 	ANDROID: proto.DeviceProps.PlatformType.ANDROID_PHONE,
-	IPHONE: proto.DeviceProps.PlatformType.IOS_PHONE
+	IPHONE: proto.DeviceProps.PlatformType.IOS_PHONE,
+	ANDROIDBUSINESS: proto.DeviceProps.PlatformType.ANDROID_PHONE,
+	IPHONEBUSINESS: proto.DeviceProps.PlatformType.IOS_PHONE
 }
 
 const getPlatformType = (platform: string): proto.DeviceProps.PlatformType => {

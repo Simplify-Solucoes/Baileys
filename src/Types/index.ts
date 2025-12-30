@@ -22,7 +22,9 @@ export type BrowsersMap = {
 	baileys(browser: string): [string, string, string]
 	windows(browser: string): [string, string, string]
 	android(browser: string): [string, string, string]
+	androidbusiness(browser: string): [string, string, string]
 	iphone(browser: string): [string, string, string]
+	iphonebusiness(browser: string): [string, string, string]
 	appropriate(browser: string): [string, string, string]
 }
 
