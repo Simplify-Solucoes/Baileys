@@ -107,6 +107,14 @@ export const cleanMessage = (message: WAMessage, meId: string, meLid: string) =>
 	}
 }
 
+const normalizeMessageForEmit = (message: WAMessage, meId: string, meLid: string) => {
+	if (!message?.key?.remoteJid) {
+		return
+	}
+
+	cleanMessage(message, meId, meLid)
+}
+
 // TODO: target:audit AUDIT THIS FUNCTION AGAIN
 export const isRealMessage = (message: WAMessage) => {
 	const normalizedContent = normalizeMessageContent(message.message)
@@ -233,6 +241,7 @@ const processMessage = async (
 	}: ProcessMessageContext
 ) => {
 	const meId = creds.me!.id
+	const meLid = creds.me!.lid || ''
 	const { accountSettings } = creds
 
 	const chat: Partial<Chat> = { id: jidNormalizedUser(getChatId(message.key)) }
@@ -286,6 +295,35 @@ const processMessage = async (
 					}
 
 					const data = await downloadAndProcessHistorySyncNotification(histNotification, options)
+					if (data.messages?.length) {
+						const lidSet = new Set<string>()
+						for (const message of data.messages) {
+							const remoteJid = message.key?.remoteJid
+							if (
+								remoteJid &&
+								!message.key?.remoteJidAlt &&
+								(isLidUser(remoteJid) || isHostedLidUser(remoteJid))
+							) {
+								lidSet.add(remoteJid)
+							}
+						}
+
+						if (lidSet.size) {
+							const pairs = await signalRepository.lidMapping.getPNsForLIDs([...lidSet])
+							if (pairs?.length) {
+								const altByLid = new Map(pairs.map(pair => [pair.lid, pair.pn]))
+								for (const message of data.messages) {
+									const remoteJid = message.key?.remoteJid
+									if (remoteJid && !message.key?.remoteJidAlt) {
+										const alt = altByLid.get(remoteJid)
+										if (alt) {
+											message.key.remoteJidAlt = alt
+										}
+									}
+								}
+							}
+						}
+					}
 
 					ev.emit('messaging-history.set', {
 						...data,
@@ -347,8 +385,8 @@ const processMessage = async (
 						//eslint-disable-next-line max-depth
 						if (retryResponse) {
 							const webMessageInfo = proto.WebMessageInfo.decode(retryResponse.webMessageInfoBytes!)
+							normalizeMessageForEmit(webMessageInfo as WAMessage, meId, meLid)
 							// wait till another upsert event is available, don't want it to be part of the PDO response message
-							// TODO: parse through proper message handling utilities (to add relevant key fields)
 							setTimeout(() => {
 								ev.emit('messages.upsert', {
 									messages: [webMessageInfo as WAMessage],
