@@ -788,6 +788,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
+				if (isStatus) {
+					const allStatusDevices = Array.from(new Set(devices.map(device => device.jid)))
+					senderKeyRecipients.length = 0
+					senderKeyRecipients.push(...allStatusDevices)
+					for (const deviceJid of allStatusDevices) {
+						senderKeyMap[deviceJid] = true
+					}
+				}
+
 				if (senderKeyRecipients.length) {
 					logger.debug({ senderKeyJids: senderKeyRecipients }, 'sending new sender key')
 
@@ -807,12 +816,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					participants.push(...result.nodes)
 				}
 
-				// if (isStatus && statusJidList?.length) {
-				// 	binaryNodeContent.push({
-				// 		tag: 'meta',
-				// 		attrs: { status_setting: 'allowlist' }
-				// 	})
-				// }
+				if (isStatus && statusJidList?.length) {
+					binaryNodeContent.push({
+						tag: 'meta',
+						attrs: { status_setting: 'allowlist' }
+					})
+				}
 
 				binaryNodeContent.push({
 					tag: 'enc',
@@ -976,28 +985,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					...(additionalAttributes || {})
 				},
 				content: binaryNodeContent
-			}
-
-			if (isStatus && !participant) {
-				// stanza.attrs.participant = jidNormalizedUser(meId)
-				// if (meLid) {
-				// 	stanza.attrs.participant_lid = jidNormalizedUser(meLid)
-				// }
-				if (statusJidList?.length) {
-					stanza.attrs.count = String(statusJidList.length)
-				}
-				stanza.attrs.t = unixTimestampSeconds().toString()
-
-				const notify = authState.creds.me?.notify
-				if (notify) {
-					stanza.attrs.notify = notify
-				}
-
-				const verifiedName = authState.creds.me?.verifiedName
-				if (verifiedName) {
-					stanza.attrs.verified_name = verifiedName
-					stanza.attrs.verified_level = 'unknown'
-				}
 			}
 
 			// if the participant to send to is explicitly specified (generally retry recp)
