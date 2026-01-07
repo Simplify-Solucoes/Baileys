@@ -984,11 +984,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					stanza.attrs.participant_lid = jidNormalizedUser(meLid)
 				}
 				if (statusJidList?.length) {
-					stanza.attrs.count = String(statusJidList.length)
+					stanza.attrs.count = String(statusJidList.length - 1)
 				}
 				stanza.attrs.t = unixTimestampSeconds().toString()
 
-				const notify = authState.creds.me?.name
+				const notify = authState.creds.me?.notify
 				if (notify) {
 					stanza.attrs.notify = notify
 				}
