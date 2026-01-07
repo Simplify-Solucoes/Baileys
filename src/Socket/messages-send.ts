@@ -807,12 +807,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					participants.push(...result.nodes)
 				}
 
-				if (isStatus && statusJidList?.length) {
-					binaryNodeContent.push({
-						tag: 'meta',
-						attrs: { status_setting: 'allowlist' }
-					})
-				}
+				// if (isStatus && statusJidList?.length) {
+				// 	binaryNodeContent.push({
+				// 		tag: 'meta',
+				// 		attrs: { status_setting: 'allowlist' }
+				// 	})
+				// }
 
 				binaryNodeContent.push({
 					tag: 'enc',
