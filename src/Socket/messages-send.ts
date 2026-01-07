@@ -788,15 +788,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
-				// if (isStatus) {
-				// 	const allStatusDevices = Array.from(new Set(devices.map(device => device.jid)))
-				// 	senderKeyRecipients.length = 0
-				// 	senderKeyRecipients.push(...allStatusDevices)
-				// 	for (const deviceJid of allStatusDevices) {
-				// 		senderKeyMap[deviceJid] = true
-				// 	}
-				// }
-
 				if (senderKeyRecipients.length) {
 					logger.debug({ senderKeyJids: senderKeyRecipients }, 'sending new sender key')
 
@@ -814,13 +805,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
 
 					participants.push(...result.nodes)
-				}
-
-				if (isStatus && statusJidList?.length) {
-					binaryNodeContent.push({
-						tag: 'meta',
-						attrs: { status_setting: 'allowlist' }
-					})
 				}
 
 				binaryNodeContent.push({
@@ -1013,7 +997,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				logger.debug({ jid }, 'adding device identity')
 			}
-
+			if (isStatus && statusJidList?.length) {
+				binaryNodeContent.push({
+					tag: 'meta',
+					attrs: { status_setting: 'allowlist' }
+				})
+			}
 			const contactTcTokenData =
 				!isGroup && !isRetryResend && !isStatus ? await authState.keys.get('tctoken', [destinationJid]) : {}
 
