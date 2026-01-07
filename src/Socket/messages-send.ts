@@ -979,12 +979,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			if (isStatus && !participant) {
-				stanza.attrs.participant = jidNormalizedUser(meId)
-				if (meLid) {
-					stanza.attrs.participant_lid = jidNormalizedUser(meLid)
-				}
+				// stanza.attrs.participant = jidNormalizedUser(meId)
+				// if (meLid) {
+				// 	stanza.attrs.participant_lid = jidNormalizedUser(meLid)
+				// }
 				if (statusJidList?.length) {
-					stanza.attrs.count = String(statusJidList.length - 1)
+					stanza.attrs.count = String(statusJidList.length)
 				}
 				stanza.attrs.t = unixTimestampSeconds().toString()
 
