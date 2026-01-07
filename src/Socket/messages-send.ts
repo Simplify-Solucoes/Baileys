@@ -788,14 +788,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
-				if (isStatus) {
-					const allStatusDevices = Array.from(new Set(devices.map(device => device.jid)))
-					senderKeyRecipients.length = 0
-					senderKeyRecipients.push(...allStatusDevices)
-					for (const deviceJid of allStatusDevices) {
-						senderKeyMap[deviceJid] = true
-					}
-				}
+				// if (isStatus) {
+				// 	const allStatusDevices = Array.from(new Set(devices.map(device => device.jid)))
+				// 	senderKeyRecipients.length = 0
+				// 	senderKeyRecipients.push(...allStatusDevices)
+				// 	for (const deviceJid of allStatusDevices) {
+				// 		senderKeyMap[deviceJid] = true
+				// 	}
+				// }
 
 				if (senderKeyRecipients.length) {
 					logger.debug({ senderKeyJids: senderKeyRecipients }, 'sending new sender key')
