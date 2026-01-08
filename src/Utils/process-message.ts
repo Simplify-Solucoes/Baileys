@@ -295,35 +295,6 @@ const processMessage = async (
 					}
 
 					const data = await downloadAndProcessHistorySyncNotification(histNotification, options)
-					if (data.messages?.length) {
-						const lidSet = new Set<string>()
-						for (const message of data.messages) {
-							const remoteJid = message.key?.remoteJid
-							if (
-								remoteJid &&
-								!message.key?.remoteJidAlt &&
-								(isLidUser(remoteJid) || isHostedLidUser(remoteJid))
-							) {
-								lidSet.add(remoteJid)
-							}
-						}
-
-						if (lidSet.size) {
-							const pairs = await signalRepository.lidMapping.getPNsForLIDs([...lidSet])
-							if (pairs?.length) {
-								const altByLid = new Map(pairs.map(pair => [pair.lid, pair.pn]))
-								for (const message of data.messages) {
-									const remoteJid = message.key?.remoteJid
-									if (remoteJid && !message.key?.remoteJidAlt) {
-										const alt = altByLid.get(remoteJid)
-										if (alt) {
-											message.key.remoteJidAlt = alt
-										}
-									}
-								}
-							}
-						}
-					}
 
 					ev.emit('messaging-history.set', {
 						...data,
