@@ -301,7 +301,6 @@ const processMessage = async (
 					if (data.lidPnMappings?.length) {
 						logger?.debug({ count: data.lidPnMappings.length }, 'processing LID-PN mappings from history sync')
 						// eslint-disable-next-line max-depth
-						logger?.error({ data: data.lidPnMappings }, 'LID-PN mappings data')
 						await signalRepository.lidMapping.storeLIDPNMappings(data.lidPnMappings)
 						for (const mapping of data.lidPnMappings) {
 							ev.emit('lid-mapping.update', mapping)
