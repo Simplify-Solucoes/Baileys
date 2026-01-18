@@ -605,8 +605,7 @@ function consolidateEvents(data: BufferedEventData) {
 			syncType: data.historySets.syncType,
 			progress: data.historySets.progress,
 			isLatest: data.historySets.isLatest,
-			peerDataRequestSessionId: data.historySets.peerDataRequestSessionId,
-			historyLidMap: data.historySets.phoneNumberToLidMappings
+			peerDataRequestSessionId: data.historySets.peerDataRequestSessionId
 		}
 	}
 
