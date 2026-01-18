@@ -284,6 +284,11 @@ function append<E extends BufferableEvent>(
 					absorbingChatUpdate(chat)
 				}
 			}
+			
+			for (const lidmap of eventData.historyLidMap || []) {
+				// Just log it for now
+				logger.trace({ lidmap }, 'Received history LID mapping')
+			}
 
 			for (const contact of eventData.contacts as Contact[]) {
 				const existingContact = data.historySets.contacts[contact.id]
