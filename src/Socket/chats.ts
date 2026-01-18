@@ -43,6 +43,7 @@ import {
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import processMessage from '../Utils/process-message'
+import { buildTcTokenFromJid } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -612,7 +613,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * type = "image for the high res picture"
 	 */
 	const profilePictureUrl = async (jid: string, type: 'preview' | 'image' = 'preview', timeoutMs?: number) => {
-		// TOOD: Add support for tctoken, existingID, and newsletter + group options
+		const baseContent: BinaryNode[] = [{ tag: 'picture', attrs: { type, query: 'url' } }]
+
+		const tcTokenContent = await buildTcTokenFromJid({ authState, jid, baseContent })
+
 		jid = jidNormalizedUser(jid)
 		const result = await query(
 			{
@@ -623,7 +627,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					type: 'get',
 					xmlns: 'w:profile:picture'
 				},
-				content: [{ tag: 'picture', attrs: { type, query: 'url' } }]
+				content: tcTokenContent
 			},
 			timeoutMs
 		)
@@ -694,24 +698,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * @param toJid the jid to subscribe to
 	 * @param tcToken token for subscription, use if present
 	 */
-	const presenceSubscribe = (toJid: string, tcToken?: Buffer) =>
-		sendNode({
+	const presenceSubscribe = async (toJid: string) => {
+		const tcTokenContent = await buildTcTokenFromJid({ authState, jid: toJid })
+
+		return sendNode({
 			tag: 'presence',
 			attrs: {
 				to: toJid,
 				id: generateMessageTag(),
 				type: 'subscribe'
 			},
-			content: tcToken
-				? [
-						{
-							tag: 'tctoken',
-							attrs: {},
-							content: tcToken
-						}
-					]
-				: undefined
+			content: tcTokenContent
 		})
+	}
 
 	const handlePresenceUpdate = ({ tag, attrs, content }: BinaryNode) => {
 		let presence: PresenceData | undefined

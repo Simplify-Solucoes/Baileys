@@ -370,13 +370,12 @@ const processMessage = async (
 							const webMessageInfo = proto.WebMessageInfo.decode(retryResponse.webMessageInfoBytes!)
 							normalizeMessageForEmit(webMessageInfo as WAMessage, meId, meLid)
 							// wait till another upsert event is available, don't want it to be part of the PDO response message
-							setTimeout(() => {
-								ev.emit('messages.upsert', {
-									messages: [webMessageInfo as WAMessage],
-									type: 'notify',
-									requestId: response.stanzaId!
-								})
-							}, 500)
+							// TODO: parse through proper message handling utilities (to add relevant key fields)
+							ev.emit('messages.upsert', {
+								messages: [webMessageInfo as WAMessage],
+								type: 'notify',
+								requestId: response.stanzaId!
+							})
 						}
 					}
 				}
