@@ -39,7 +39,7 @@ export class LIDMappingStore {
 			const lidDecoded = jidDecode(lid)
 			const pnDecoded = jidDecode(pn)
 
-			if (!lidDecoded || !pnDecoded) return
+			if (!lidDecoded || !pnDecoded) continue
 
 			const pnUser = pnDecoded.user
 			const lidUser = lidDecoded.user
