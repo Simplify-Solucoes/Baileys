@@ -623,10 +623,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * type = "image for the high res picture"
 	 */
 	const profilePictureUrl = async (jid: string, type: 'preview' | 'image' = 'preview', timeoutMs?: number) => {
-		const baseContent: BinaryNode[] = [{ tag: 'picture', attrs: { type, query: 'url' } }]
-
-		const tcTokenContent = await buildTcTokenFromJid({ authState, jid, baseContent })
-
+		// TOOD: Add support for tctoken, existingID, and newsletter + group options
 		jid = jidNormalizedUser(jid)
 		const result = await query(
 			{
@@ -637,7 +634,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					type: 'get',
 					xmlns: 'w:profile:picture'
 				},
-				content: tcTokenContent
+				content: [{ tag: 'picture', attrs: { type, query: 'url' } }]
 			},
 			timeoutMs
 		)
@@ -713,19 +710,24 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * @param toJid the jid to subscribe to
 	 * @param tcToken token for subscription, use if present
 	 */
-	const presenceSubscribe = async (toJid: string) => {
-		const tcTokenContent = await buildTcTokenFromJid({ authState, jid: toJid })
-
-		return sendNode({
+	const presenceSubscribe = (toJid: string, tcToken?: Buffer) =>
+		sendNode({
 			tag: 'presence',
 			attrs: {
 				to: toJid,
 				id: generateMessageTag(),
 				type: 'subscribe'
 			},
-			content: tcTokenContent
+			content: tcToken
+				? [
+						{
+							tag: 'tctoken',
+							attrs: {},
+							content: tcToken
+						}
+					]
+				: undefined
 		})
-	}
 
 	const handlePresenceUpdate = ({ tag, attrs, content }: BinaryNode) => {
 		let presence: PresenceData | undefined
