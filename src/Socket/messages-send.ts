@@ -41,6 +41,12 @@ import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
+	isTcTokenExpired,
+	resolveTcTokenJid,
+	shouldSendNewTcToken,
+	storeTcTokensFromIqResult
+} from '../Utils/tc-token-utils'
+import {
 	areJidsSameUser,
 	type BinaryNode,
 	type BinaryNodeAttributes,
@@ -1054,12 +1060,55 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
-			const contactTcTokenData =
-				!isGroup && !isRetryResend && !isStatus ? await authState.keys.get('tctoken', [destinationJid]) : {}
+			// WA Web never attaches tctoken to peer (AppStateSync) messages — server rejects with 479
+			const isPeerMessage = additionalAttributes?.['category'] === 'peer'
+			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage
 
-			const tcTokenBuffer = contactTcTokenData[destinationJid]?.token
+			// Resolve destination to LID for tctoken storage — matches Signal session key pattern
+			const tcTokenJid = is1on1Send
+				? await resolveTcTokenJid(
+						destinationJid,
+						signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+					)
+				: destinationJid
+			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', [tcTokenJid]) : {}
+			const existingTokenEntry = contactTcTokenData[tcTokenJid]
+			let tcTokenBuffer = existingTokenEntry?.token
 
-			if (tcTokenBuffer) {
+			// Treat expired tokens the same as missing — clear from cache
+			if (tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
+				logger.debug(
+					{ jid: destinationJid, timestamp: existingTokenEntry?.timestamp },
+					'tctoken expired, will re-fetch'
+				)
+				tcTokenBuffer = undefined
+				// Opportunistic cleanup: remove expired token from store
+				try {
+					await authState.keys.set({ tctoken: { [tcTokenJid]: null } })
+				} catch {
+					/* ignore cleanup errors */
+				}
+			}
+
+			// Like WA Web: if tctoken is missing, fire-and-forget the request so it
+			// arrives for the 463-retry (or next send). Don't block the send path.
+			if (!tcTokenBuffer?.length && is1on1Send) {
+				logger.debug({ jid: destinationJid }, 'tctoken missing, requesting from server (non-blocking)')
+				getPrivacyTokens([destinationJid])
+					.then(async fetchResult => {
+						await storeTcTokensFromIqResult({
+							result: fetchResult,
+							fallbackJid: destinationJid,
+							keys: authState.keys,
+							getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+						})
+					})
+					.catch(err => {
+						logger.debug({ jid: destinationJid, err: err?.message }, 'fire-and-forget tctoken fetch failed')
+					})
+			}
+
+			if (tcTokenBuffer?.length) {
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'tctoken',
 					attrs: {},
@@ -1104,6 +1153,36 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
 
 			await sendNode(stanza)
+
+			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken)
+			// Only for 1:1 sends where we already have a token, and only when bucket boundary crossed.
+			// When tctoken was missing, the non-blocking fetch above already called getPrivacyTokens.
+			if (is1on1Send && tcTokenBuffer?.length && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+				const issueTimestamp = unixTimestampSeconds()
+				// WA Web writes senderTimestamp only AFTER the IQ succeeds
+				// (WAWebSendTcTokenChatAction.sendTcToken).
+				// This ensures failed issuance allows re-issuance on the next message
+				// rather than blocking it for up to 7 days (one bucket duration).
+				getPrivacyTokens([destinationJid], issueTimestamp)
+					.then(async () => {
+						// Re-read entry to avoid overwriting concurrent notification handler updates
+						const currentData = await authState.keys.get('tctoken', [tcTokenJid])
+						const currentEntry = currentData[tcTokenJid]
+						if (currentEntry?.token?.length) {
+							await authState.keys.set({
+								tctoken: {
+									[tcTokenJid]: {
+										...currentEntry,
+										senderTimestamp: issueTimestamp
+									}
+								}
+							})
+						}
+					})
+					.catch(err => {
+						logger.debug({ jid: destinationJid, err: err?.message }, 'fire-and-forget tctoken issuance failed')
+					})
+			}
 
 			// Add message to retry cache if enabled
 			if (messageRetryManager && !participant) {
