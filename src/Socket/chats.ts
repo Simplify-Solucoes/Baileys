@@ -774,6 +774,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					]
 				: undefined
 		})
+	}
 
 	const handlePresenceUpdate = ({ tag, attrs, content }: BinaryNode) => {
 		let presence: PresenceData | undefined
