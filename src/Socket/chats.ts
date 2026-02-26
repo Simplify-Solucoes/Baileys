@@ -82,6 +82,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		sendUnifiedSession
 	} = sock
 
+	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+
 	let privacySettings: { [_: string]: string } | undefined
 
 	let syncState: SyncState = SyncState.Connecting
@@ -657,7 +659,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				authState,
 				jid: normalizedJid,
 				baseContent,
-				getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+				getLIDForPN
 			})
 		}
 
@@ -748,11 +750,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * @param tcToken token for subscription, use if present
 	 */
 	const presenceSubscribe = async (toJid: string) => {
-		const tcTokenContent = await buildTcTokenFromJid({
-			authState,
-			jid: toJid,
-			getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
-		})
+		// Only include tctoken for user JIDs — groups/newsletters don't use tctokens
+		const normalizedToJid = jidNormalizedUser(toJid)
+		const isUserJid = isPnUser(normalizedToJid) || isLidUser(normalizedToJid)
+		const tcTokenContent = isUserJid
+			? await buildTcTokenFromJid({ authState, jid: normalizedToJid, getLIDForPN })
+			: undefined
 
 		return sendNode({
 			tag: 'presence',
