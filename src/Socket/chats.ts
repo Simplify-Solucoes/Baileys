@@ -44,6 +44,7 @@ import {
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import processMessage from '../Utils/process-message'
+import { buildTcTokenFromJid } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -764,15 +765,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				id: generateMessageTag(),
 				type: 'subscribe'
 			},
-			content: tcToken
-				? [
-						{
-							tag: 'tctoken',
-							attrs: {},
-							content: tcToken
-						}
-					]
-				: undefined
+			content: tcTokenContent
 		})
 	}
 

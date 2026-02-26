@@ -1601,8 +1601,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return album
 	}
 
-	const getPrivacyTokens = async (jids: string[]) => {
-		const t = unixTimestampSeconds().toString()
+	const getPrivacyTokens = async (jids: string[], timestamp?: number | string) => {
+		const t = (timestamp ?? unixTimestampSeconds()).toString()
 		const result = await query({
 			tag: 'iq',
 			attrs: {
