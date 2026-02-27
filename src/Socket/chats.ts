@@ -655,14 +655,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			me && (normalizedJid === jidNormalizedUser(me.id) || (me.lid && normalizedJid === jidNormalizedUser(me.lid)))
 		let content: BinaryNode[] | undefined = baseContent
 
-		if (isUserJid && !isSelf) {
-			content = await buildTcTokenFromJid({
-				authState,
-				jid: normalizedJid,
-				baseContent,
-				getLIDForPN
-			})
-		}
+		// if (isUserJid && !isSelf) {
+		// 	content = await buildTcTokenFromJid({
+		// 		authState,
+		// 		jid: normalizedJid,
+		// 		baseContent,
+		// 		getLIDForPN
+		// 	})
+		// }
 
 		jid = jidNormalizedUser(jid)
 		const result = await query(
