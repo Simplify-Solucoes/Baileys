@@ -11,6 +11,8 @@ export interface Contact {
 	notify?: string
 	/** I have no idea */
 	verifiedName?: string
+	/** whether this is a saved address-book contact */
+	isAddressBookContact?: boolean
 	// Baileys Added
 	/**
 	 * Url of the profile picture of the contact

@@ -1206,7 +1206,8 @@ await sock.sendMessage(
 - Message body can be a `extendedTextMessage` or `imageMessage` or `videoMessage` or `voiceMessage`, see [here](https://baileys.whiskeysockets.io/types/AnyRegularMessageContent.html)
 - You can add `backgroundColor` and other options in the message options, see [here](https://baileys.whiskeysockets.io/types/MiscMessageGenerationOptions.html)
 - `broadcast: true` enables broadcast mode
-- `statusJidList`: a list of people that you can get which you need to provide, which are the people who will get this status message.
+- `statusJidList`: optional manual override for the status audience. If omitted, Baileys now derives recipients from the main device's status privacy settings and synced contacts.
+- For large contact lists or multi-process deployments, prefer configuring `statusContactStore` so contact fragments are persisted in Redis/MongoDB instead of only being rebuilt from socket events.
 
 - You can send messages to broadcast lists the same way you send messages to groups & individual chats.
 - Right now, WA Web does not support creating broadcast lists, but you can still delete them.

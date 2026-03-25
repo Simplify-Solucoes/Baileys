@@ -93,6 +93,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		upsertMessage,
 		query,
 		fetchPrivacySettings,
+		getStatusBroadcastRecipients,
 		sendNode,
 		groupMetadata,
 		groupToggleEphemeral
@@ -653,6 +654,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isNewsletter = server === 'newsletter'
 		const isGroupOrStatus = isGroup || isStatus
 		const finalJid = jid
+		let statusSetting = statusJidList?.length ? 'allowlist' : undefined
 
 		msgId = msgId || generateMessageIDV2(meId)
 		useUserDevicesCache = useUserDevicesCache !== false
@@ -685,6 +687,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				device,
 				jid: participant.jid
 			})
+		}
+
+		if (isStatus && !statusJidList) {
+			const statusRecipients = await getStatusBroadcastRecipients()
+			statusJidList = statusRecipients.jids
+			statusSetting = statusRecipients.statusSetting
 		}
 
 		await authState.keys.transaction(async () => {
@@ -770,11 +778,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
-				if (isStatus && statusJidList) {
-					participantsList.push(...statusJidList)
+				if (isStatus) {
+					if (statusJidList?.length) {
+						participantsList.push(...statusJidList)
+					}
+
+					const ownStatusIdentity = meLid || meId
+					if (ownStatusIdentity) {
+						participantsList.push(ownStatusIdentity)
+					}
 				}
 
-				const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false)
+				const additionalDevices = await getUSyncDevices(
+					isStatus ? Array.from(new Set(participantsList)) : participantsList,
+					!!useUserDevicesCache,
+					false
+				)
 				devices.push(...additionalDevices)
 
 				if (isGroup) {
@@ -1032,10 +1051,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				logger.debug({ jid }, 'adding device identity')
 			}
-			if (isStatus && statusJidList?.length) {
+			if (isStatus && statusSetting) {
 				binaryNodeContent.push({
 					tag: 'meta',
-					attrs: { status_setting: 'allowlist' }
+					attrs: { status_setting: statusSetting }
 				})
 			}
 			if (
