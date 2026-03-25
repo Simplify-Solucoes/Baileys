@@ -249,8 +249,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const getStatusBroadcastRecipients = async (force = false) => {
 		const [privacy = DEFAULT_STATUS_PRIVACY] = await fetchStatusPrivacy(force)
+		const storedContacts = await getStoredStatusContacts()
 		const rawRecipients = getStatusRecipients({
-			contacts: await getStoredStatusContacts(),
+			contacts: storedContacts,
 			privacy
 		})
 		const pnRecipients = rawRecipients.filter(jid => !isLidUser(jid))
@@ -264,11 +265,31 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			const lid = lidByPn.get(jid)
 			return lid ? [lid] : []
 		})
+		const dedupedRecipients = Array.from(new Set(resolvedRecipients))
+
+		console.log('[STATUS DEBUG] resolved status broadcast recipients', {
+			force,
+			privacyType: privacy.type,
+			statusSetting: getStatusSettingMeta(privacy.type),
+			storedContacts: storedContacts.length,
+			rawRecipients: rawRecipients.length,
+			pnRecipients: pnRecipients.length,
+			lidMappings: lidMappings.length,
+			finalRecipients: dedupedRecipients.length
+		})
+
+		if (dedupedRecipients.length === 0) {
+			console.log('[STATUS DEBUG] status broadcast recipient resolution produced an empty audience', {
+				force,
+				privacyType: privacy.type,
+				storedContacts: storedContacts.length
+			})
+		}
 
 		return {
 			type: privacy.type,
 			statusSetting: getStatusSettingMeta(privacy.type),
-			jids: Array.from(new Set(resolvedRecipients))
+			jids: dedupedRecipients
 		}
 	}
 
