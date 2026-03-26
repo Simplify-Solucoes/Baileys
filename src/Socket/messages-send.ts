@@ -815,14 +815,31 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					!!useUserDevicesCache,
 					false
 				)
-				devices.push(...additionalDevices)
+				const statusFilteredDevices = isStatus
+					? additionalDevices.filter(device => {
+							const deviceJid = device.jid
+							const isOwnPnDevice =
+								(isPnUser(deviceJid) || isHostedPnUser(deviceJid)) &&
+								areJidsSameUser(deviceJid, meId)
+
+							return !isOwnPnDevice
+					  })
+					: additionalDevices
+				devices.push(...statusFilteredDevices)
 
 				if (isStatus) {
 					console.log('[STATUS DEBUG] status fanout devices resolved', {
 						jid,
 						statusSetting,
-						devices: additionalDevices.length,
-						deviceJids: additionalDevices.map(device => device.jid)
+						devices: statusFilteredDevices.length,
+						deviceJids: statusFilteredDevices.map(device => device.jid),
+						removedOwnPnDevices: additionalDevices
+							.filter(
+								device =>
+									(isPnUser(device.jid) || isHostedPnUser(device.jid)) &&
+									areJidsSameUser(device.jid, meId)
+							)
+							.map(device => device.jid)
 					})
 				}
 
