@@ -38,11 +38,6 @@ const getPreferredStatusJid = (contact: Contact) => {
 const getContactVariants = (contact: Contact) =>
 	uniqueJids([contact.id, contact.lid, contact.phoneNumber])
 
-const isAddressBookContact = (contact: Contact) =>
-	typeof contact.isAddressBookContact === 'boolean'
-		? contact.isAddressBookContact
-		: typeof contact.name === 'string' && contact.name.trim().length > 0
-
 export const getStatusSettingMeta = (type: StatusPrivacySetting['type']): StatusSettingMeta => {
 	switch (type) {
 		case 'whitelist':
@@ -72,7 +67,6 @@ export const getStatusRecipients = ({
 
 	const blacklist = new Set(privacy.type === 'blacklist' ? uniqueJids(privacy.list) : [])
 	const recipients = contacts
-		.filter(isAddressBookContact)
 		.filter(contact => {
 			if (blacklist.size === 0) {
 				return true

@@ -14,7 +14,7 @@ describe('getStatusRecipients', () => {
 		expect(recipients).toEqual(['5511999999999@s.whatsapp.net'])
 	})
 
-	it('uses saved contacts for contacts mode and ignores non-user or notify-only entries', () => {
+	it('uses all stored non-group contacts for contacts mode', () => {
 		const contacts: Contact[] = [
 			{ id: '5511999999999@s.whatsapp.net', name: 'Alice' },
 			{ id: '5511777777777@s.whatsapp.net', notify: 'Bob' },
@@ -27,10 +27,14 @@ describe('getStatusRecipients', () => {
 			privacy: DEFAULT_STATUS_PRIVACY
 		})
 
-		expect(recipients).toEqual(['5511999999999@s.whatsapp.net', '123456789@lid'])
+		expect(recipients).toEqual([
+			'5511999999999@s.whatsapp.net',
+			'5511777777777@s.whatsapp.net',
+			'123456789@lid'
+		])
 	})
 
-	it('prefers explicit address-book flag over name heuristics', () => {
+	it('keeps contacts regardless of address-book flags', () => {
 		const contacts: Contact[] = [
 			{ id: '5511999999999@s.whatsapp.net', name: 'Alice', isAddressBookContact: false },
 			{ id: '5511777777777@s.whatsapp.net', isAddressBookContact: true }
@@ -41,7 +45,7 @@ describe('getStatusRecipients', () => {
 			privacy: DEFAULT_STATUS_PRIVACY
 		})
 
-		expect(recipients).toEqual(['5511777777777@s.whatsapp.net'])
+		expect(recipients).toEqual(['5511999999999@s.whatsapp.net', '5511777777777@s.whatsapp.net'])
 	})
 
 	it('filters blacklisted contacts using normalized recipient jids', () => {
