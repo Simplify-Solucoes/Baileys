@@ -7,13 +7,11 @@ import type {
 	CacheStore,
 	ChatModification,
 	ChatMutation,
-	Contact,
 	LTHashState,
 	MessageUpsertType,
 	PresenceData,
 	SocketConfig,
 	StatusContactRecord,
-	StatusContactUpdate,
 	WABusinessHoursConfig,
 	WABusinessProfile,
 	WAMediaUpload,
@@ -43,8 +41,7 @@ import {
 	generateProfilePicture,
 	getHistoryMsg,
 	newLTHashState,
-	processSyncAction,
-	trimUndefined
+	processSyncAction
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import processMessage from '../Utils/process-message'
@@ -98,7 +95,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	let privacySettings: { [_: string]: string } | undefined
 	let statusPrivacySettings: StatusPrivacySetting[] | undefined
-	const contacts: { [jid: string]: Contact } = {}
 
 	let syncState: SyncState = SyncState.Connecting
 
@@ -134,58 +130,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		return key
 	}
 
-	const toStatusContactUpdates = (contactList: Array<Partial<Contact>>): StatusContactUpdate[] =>
-		contactList.flatMap(contact => {
-			if (!contact.id) {
-				return []
-			}
-
-			const update = trimUndefined({
-				id: contact.id,
-				lid: contact.lid,
-				phoneNumber: contact.phoneNumber,
-				name: contact.name,
-				isAddressBookContact:
-					typeof contact.isAddressBookContact === 'boolean'
-						? contact.isAddressBookContact
-						: typeof contact.name === 'string'
-							? contact.name.trim().length > 0
-							: undefined
-			}) as StatusContactUpdate
-
-			return [update]
-		})
-
-	const upsertContacts = async (contactList: Array<Partial<Contact>>) => {
-		const updates = toStatusContactUpdates(contactList)
-		if (updates.length === 0) {
-			return
-		}
-
-		if (statusContactStore) {
-			await statusContactStore.upsert(updates)
-			return
-		}
-
-		for (const contact of contactList) {
-			if (!contact.id) {
-				continue
-			}
-
-			const existing = contacts[contact.id] || { id: contact.id }
-			contacts[contact.id] = {
-				...existing,
-				...trimUndefined(contact)
-			}
-		}
-	}
-
 	const getStoredStatusContacts = async (): Promise<StatusContactRecord[]> => {
 		if (statusContactStore) {
 			return await statusContactStore.getAll()
 		}
 
-		return Object.values(contacts)
+		return []
 	}
 
 	const fetchPrivacySettings = async (force = false) => {
@@ -1405,29 +1355,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		} catch (error) {
 			logger.warn({ lid, pn, error }, 'Failed to store LID-PN mapping')
 		}
-	})
-
-	ev.on('settings.update', update => {
-		if (update.setting === 'statusPrivacy') {
-			statusPrivacySettings = undefined
-		}
-	})
-
-	ev.on('messaging-history.set', ({ contacts: contactList }) => {
-		void upsertContacts(contactList || []).catch(error => {
-			logger.warn({ error }, 'failed to persist status contacts from history sync')
-		})
-	})
-
-	ev.on('contacts.upsert', contactList => {
-		void upsertContacts(contactList || []).catch(error => {
-			logger.warn({ error }, 'failed to persist status contacts from upsert event')
-		})
-	})
-	ev.on('contacts.update', contactList => {
-		void upsertContacts(contactList || []).catch(error => {
-			logger.warn({ error }, 'failed to persist status contacts from update event')
-		})
 	})
 
 	return {

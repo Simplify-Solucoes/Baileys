@@ -29,11 +29,8 @@ export type PossiblyExtendedCacheStore = CacheStore & {
 }
 
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
-export type StatusContactUpdate = Partial<
-	Pick<Contact, 'id' | 'lid' | 'phoneNumber' | 'name' | 'isAddressBookContact'>
-> &
-	Pick<Contact, 'id'>
-export type StatusContactRecord = Pick<Contact, 'id' | 'lid' | 'phoneNumber' | 'name' | 'isAddressBookContact'>
+export type StatusContactUpdate = Partial<Pick<Contact, 'id' | 'lid' | 'phoneNumber' | 'name'>> & Pick<Contact, 'id'>
+export type StatusContactRecord = Pick<Contact, 'id' | 'lid' | 'phoneNumber' | 'name'>
 
 export type StatusContactStore = {
 	/**

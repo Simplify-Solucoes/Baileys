@@ -34,10 +34,10 @@ describe('getStatusRecipients', () => {
 		])
 	})
 
-	it('keeps contacts regardless of address-book flags', () => {
+	it('keeps contacts regardless of extra metadata flags', () => {
 		const contacts: Contact[] = [
-			{ id: '5511999999999@s.whatsapp.net', name: 'Alice', isAddressBookContact: false },
-			{ id: '5511777777777@s.whatsapp.net', isAddressBookContact: true }
+			{ id: '5511999999999@s.whatsapp.net', name: 'Alice' },
+			{ id: '5511777777777@s.whatsapp.net' }
 		]
 
 		const recipients = getStatusRecipients({
