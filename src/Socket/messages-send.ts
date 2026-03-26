@@ -693,17 +693,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const statusRecipients = await getStatusBroadcastRecipients()
 			statusJidList = statusRecipients.jids
 			statusSetting = statusRecipients.statusSetting
-			console.log('[STATUS DEBUG] prepared automatic status audience from privacy settings', {
-				jid,
-				statusSetting,
-				recipients: statusJidList.length
-			})
-		} else if (isStatus) {
-			console.log('[STATUS DEBUG] prepared manual status audience override', {
-				jid,
-				statusSetting,
-				recipients: statusJidList?.length || 0
-			})
 		}
 
 		await authState.keys.transaction(async () => {
@@ -800,14 +789,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					if (ownStatusIdentity) {
 						participantsList.push(ownStatusIdentity)
 					}
-
-					console.log('[STATUS DEBUG] status fanout seed list prepared', {
-						jid,
-						statusSetting,
-						audienceRecipients: statusJidList?.length || 0,
-						fanoutSeeds: participantsList.length,
-						ownStatusIdentity
-					})
 				}
 
 				const additionalDevices = await getUSyncDevices(
@@ -826,22 +807,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					  })
 					: additionalDevices
 				devices.push(...statusFilteredDevices)
-
-				if (isStatus) {
-					console.log('[STATUS DEBUG] status fanout devices resolved', {
-						jid,
-						statusSetting,
-						devices: statusFilteredDevices.length,
-						deviceJids: statusFilteredDevices.map(device => device.jid),
-						removedOwnPnDevices: additionalDevices
-							.filter(
-								device =>
-									(isPnUser(device.jid) || isHostedPnUser(device.jid)) &&
-									areJidsSameUser(device.jid, meId)
-							)
-							.map(device => device.jid)
-					})
-				}
 
 				if (isGroup) {
 					additionalAttributes = {
@@ -1102,10 +1067,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				binaryNodeContent.push({
 					tag: 'meta',
 					attrs: { status_setting: statusSetting }
-				})
-				console.log('[STATUS DEBUG] attached status_setting metadata to status stanza', {
-					jid,
-					statusSetting
 				})
 			}
 			if (

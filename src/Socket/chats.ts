@@ -217,25 +217,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		})
 		const dedupedRecipients = Array.from(new Set(resolvedRecipients))
 
-		console.log('[STATUS DEBUG] resolved status broadcast recipients', {
-			force,
-			privacyType: privacy.type,
-			statusSetting: getStatusSettingMeta(privacy.type),
-			storedContacts: storedContacts.length,
-			rawRecipients: rawRecipients.length,
-			pnRecipients: pnRecipients.length,
-			lidMappings: lidMappings.length,
-			finalRecipients: dedupedRecipients.length
-		})
-
-		if (dedupedRecipients.length === 0) {
-			console.log('[STATUS DEBUG] status broadcast recipient resolution produced an empty audience', {
-				force,
-				privacyType: privacy.type,
-				storedContacts: storedContacts.length
-			})
-		}
-
 		return {
 			type: privacy.type,
 			statusSetting: getStatusSettingMeta(privacy.type),
