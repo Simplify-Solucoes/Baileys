@@ -392,7 +392,7 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 	additionalNodes?: BinaryNode[]
 	/** should we use the devices cache, or fetch afresh from the server; default assumed to be "true" */
 	useUserDevicesCache?: boolean
-	/** jid list of participants for status@broadcast */
+	/** optional manual override for status@broadcast recipients */
 	statusJidList?: string[]
 }
 
@@ -405,7 +405,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
 	ephemeralExpiration?: number | string
 	/** timeout for media upload to WA server */
 	mediaUploadTimeoutMs?: number
-	/** jid list of participants for status@broadcast */
+	/** optional manual override for status@broadcast recipients */
 	statusJidList?: string[]
 	/** backgroundcolor for status */
 	backgroundColor?: string

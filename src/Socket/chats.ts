@@ -11,6 +11,7 @@ import type {
 	MessageUpsertType,
 	PresenceData,
 	SocketConfig,
+	StatusContactRecord,
 	WABusinessHoursConfig,
 	WABusinessProfile,
 	WAMediaUpload,
@@ -44,6 +45,12 @@ import {
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import processMessage from '../Utils/process-message'
+import {
+	DEFAULT_STATUS_PRIVACY,
+	getStatusRecipients,
+	getStatusSettingMeta,
+	type StatusPrivacySetting
+} from '../Utils/status-privacy'
 import { buildTcTokenFromJid } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
@@ -84,8 +91,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const statusContactStore = config.statusContactStore
 
 	let privacySettings: { [_: string]: string } | undefined
+	let statusPrivacySettings: StatusPrivacySetting[] | undefined
 
 	let syncState: SyncState = SyncState.Connecting
 
@@ -121,6 +130,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		return key
 	}
 
+	const getStoredStatusContacts = async (): Promise<StatusContactRecord[]> => {
+		if (statusContactStore) {
+			return await statusContactStore.getAll()
+		}
+
+		return []
+	}
+
 	const fetchPrivacySettings = async (force = false) => {
 		if (!privacySettings || force) {
 			const { content } = await query({
@@ -136,6 +153,75 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		return privacySettings
+	}
+
+	const fetchStatusPrivacy = async (force = false) => {
+		if (!statusPrivacySettings || force) {
+			try {
+				const result = await query({
+					tag: 'iq',
+					attrs: {
+						xmlns: 'status',
+						to: S_WHATSAPP_NET,
+						type: 'get'
+					},
+					content: [{ tag: 'privacy', attrs: {} }]
+				})
+				const privacyNode = getBinaryNodeChild(result, 'privacy')
+				const parsed = getBinaryNodeChildren(privacyNode || { tag: 'privacy', attrs: {}, content: [] }, 'list').map(list => ({
+					type: list.attrs.type || DEFAULT_STATUS_PRIVACY.type,
+					isDefault: list.attrs.default === 'true',
+					list: getBinaryNodeChildren(list, 'user').map(user => jidNormalizedUser(user.attrs.jid))
+				}))
+
+				if (parsed.length === 0) {
+					statusPrivacySettings = [DEFAULT_STATUS_PRIVACY]
+				} else {
+					const defaultIndex = parsed.findIndex(item => item.isDefault)
+					if (defaultIndex > 0) {
+						const [defaultSetting] = parsed.splice(defaultIndex, 1)
+						parsed.unshift(defaultSetting!)
+					}
+
+					statusPrivacySettings = parsed
+				}
+			} catch (error) {
+				if (error instanceof Boom && error.output?.statusCode === 404) {
+					statusPrivacySettings = [DEFAULT_STATUS_PRIVACY]
+				} else {
+					throw error
+				}
+			}
+		}
+
+		return statusPrivacySettings
+	}
+
+	const getStatusBroadcastRecipients = async (force = false) => {
+		const [privacy = DEFAULT_STATUS_PRIVACY] = await fetchStatusPrivacy(true)
+		const storedContacts = await getStoredStatusContacts()
+		const rawRecipients = getStatusRecipients({
+			contacts: storedContacts,
+			privacy
+		})
+		const pnRecipients = rawRecipients.filter(jid => !isLidUser(jid))
+		const lidMappings = pnRecipients.length ? (await signalRepository.lidMapping.getLIDsForPNs(pnRecipients)) || [] : []
+		const lidByPn = new Map(lidMappings.map(({ pn, lid }) => [pn, lid]))
+		const resolvedRecipients = rawRecipients.flatMap(jid => {
+			if (isLidUser(jid)) {
+				return [jid]
+			}
+
+			const lid = lidByPn.get(jid)
+			return lid ? [lid] : []
+		})
+		const dedupedRecipients = Array.from(new Set(resolvedRecipients))
+
+		return {
+			type: privacy.type,
+			statusSetting: getStatusSettingMeta(privacy.type),
+			jids: dedupedRecipients
+		}
 	}
 
 	/** helper function to run a privacy IQ query */
@@ -184,6 +270,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const updateStatusPrivacy = async (value: WAPrivacyValue) => {
 		await privacyQuery('status', value)
+		privacySettings = undefined
+		statusPrivacySettings = undefined
 	}
 
 	const updateReadReceiptsPrivacy = async (value: WAReadReceiptsValue) => {
@@ -1259,6 +1347,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		appStatePatchMutex,
 		notificationMutex,
 		fetchPrivacySettings,
+		fetchStatusPrivacy,
+		getStatusBroadcastRecipients,
 		upsertMessage,
 		appPatch,
 		sendPresenceUpdate,

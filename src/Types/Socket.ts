@@ -3,6 +3,7 @@ import type { URL } from 'url'
 import { proto } from '../../WAProto/index.js'
 import type { ILogger } from '../Utils/logger'
 import type { AuthenticationState, LIDMapping, SignalAuthState, TransactionCapabilityOptions } from './Auth'
+import type { Contact } from './Contact'
 import type { GroupMetadata } from './GroupMetadata'
 import { type MediaConnInfo, type WAMessageKey } from './Message'
 import type { SignalRepositoryWithLIDStore } from './Signal'
@@ -28,6 +29,18 @@ export type PossiblyExtendedCacheStore = CacheStore & {
 }
 
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
+export type StatusContactUpdate = Partial<Pick<Contact, 'id' | 'lid' | 'phoneNumber' | 'name'>> & Pick<Contact, 'id'>
+export type StatusContactRecord = Pick<Contact, 'id' | 'lid' | 'phoneNumber' | 'name'>
+
+export type StatusContactStore = {
+	/**
+	 * Merge contact fragments keyed by `id`.
+	 * Implementations should preserve existing fields when an update omits them.
+	 */
+	upsert: (contacts: StatusContactUpdate[]) => Promise<void> | void
+	/** Return persisted address-book candidates for status audience resolution. */
+	getAll: () => Promise<StatusContactRecord[]> | StatusContactRecord[]
+}
 
 export type SocketConfig = {
 	/** the WS url to connect to WA */
@@ -84,6 +97,8 @@ export type SocketConfig = {
 	msgRetryCounterCache?: CacheStore
 	/** provide a cache to store a user's device list */
 	userDevicesCache?: PossiblyExtendedCacheStore
+	/** persisted contact fragments used to resolve status audiences without keeping them in memory */
+	statusContactStore?: StatusContactStore
 	/** cache to store call offers */
 	callOfferCache?: CacheStore
 	/** cache to track placeholder resends */
