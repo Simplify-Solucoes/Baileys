@@ -248,7 +248,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const getStatusBroadcastRecipients = async (force = false) => {
-		const [privacy = DEFAULT_STATUS_PRIVACY] = await fetchStatusPrivacy(force)
+		const [privacy = DEFAULT_STATUS_PRIVACY] = await fetchStatusPrivacy(true)
 		const storedContacts = await getStoredStatusContacts()
 		const rawRecipients = getStatusRecipients({
 			contacts: storedContacts,
@@ -1404,6 +1404,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			await signalRepository.lidMapping.storeLIDPNMappings([{ lid, pn }])
 		} catch (error) {
 			logger.warn({ lid, pn, error }, 'Failed to store LID-PN mapping')
+		}
+	})
+
+	ev.on('settings.update', update => {
+		if (update.setting === 'statusPrivacy') {
+			statusPrivacySettings = undefined
 		}
 	})
 
