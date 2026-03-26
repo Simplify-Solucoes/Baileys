@@ -794,7 +794,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						participantsList.push(...statusJidList)
 					}
 
-					const ownStatusIdentity = meLid || meId
+					// Seed self fanout with our normalized user JID so USync expands all of our devices,
+					// instead of treating the current device JID as a single explicit recipient.
+					const ownStatusIdentity = jidNormalizedUser(meLid || meId)
 					if (ownStatusIdentity) {
 						participantsList.push(ownStatusIdentity)
 					}
@@ -819,7 +821,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					console.log('[STATUS DEBUG] status fanout devices resolved', {
 						jid,
 						statusSetting,
-						devices: additionalDevices.length
+						devices: additionalDevices.length,
+						deviceJids: additionalDevices.map(device => device.jid)
 					})
 				}
 
