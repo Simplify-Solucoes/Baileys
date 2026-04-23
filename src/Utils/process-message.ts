@@ -64,14 +64,14 @@ async function storeTcTokensFromHistorySync(
 ) {
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 
-	const candidates: { storageJid: string; token: Buffer; ts: number; senderTs?: number }[] = []
+	const candidates: { storageJids: string[]; token: Buffer; ts: number; senderTs?: number }[] = []
 	for (const chat of chats) {
 		const ts = chat.tcTokenTimestamp ? toNumber(chat.tcTokenTimestamp) : 0
 		if (chat.tcToken?.length && ts > 0) {
 			const jid = jidNormalizedUser(chat.id!)
 			const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
 			candidates.push({
-				storageJid,
+				storageJids: [...new Set([storageJid, jid])],
 				token: Buffer.from(chat.tcToken),
 				ts,
 				senderTs: chat.tcTokenSenderTimestamp ? toNumber(chat.tcTokenSenderTimestamp) : undefined
@@ -83,22 +83,24 @@ async function storeTcTokensFromHistorySync(
 		return
 	}
 
-	const jids = candidates.map(c => c.storageJid)
+	const jids = [...new Set(candidates.flatMap(c => c.storageJids))]
 	const existing = await keyStore.get('tctoken', jids)
 	const entries: Record<string, { token: Buffer; timestamp?: string; senderTimestamp?: number }> = {}
 
 	for (const c of candidates) {
-		const existingEntry = existing[c.storageJid]
-		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
-		if (existingTs > 0 && existingTs >= c.ts) {
-			continue
-		}
+		for (const storageJid of c.storageJids) {
+			const existingEntry = existing[storageJid]
+			const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
+			if (existingTs > 0 && existingTs >= c.ts) {
+				continue
+			}
 
-		entries[c.storageJid] = {
-			...existingEntry,
-			token: c.token,
-			timestamp: String(c.ts),
-			...(c.senderTs !== undefined ? { senderTimestamp: c.senderTs } : {})
+			entries[storageJid] = {
+				...existingEntry,
+				token: c.token,
+				timestamp: String(c.ts),
+				...(c.senderTs !== undefined ? { senderTimestamp: c.senderTs } : {})
+			}
 		}
 	}
 
@@ -359,6 +361,10 @@ const processMessage = async (
 						for (const mapping of data.lidPnMappings) {
 							ev.emit('lid-mapping.update', mapping)
 						}
+					}
+
+					if (data.nctSalt?.length) {
+						ev.emit('creds.update', { nctSalt: data.nctSalt })
 					}
 
 					ev.emit('messaging-history.set', {

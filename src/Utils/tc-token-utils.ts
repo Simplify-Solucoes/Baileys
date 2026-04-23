@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import type { SignalKeyStoreWithTransaction } from '../Types'
 import type { BinaryNode } from '../WABinary'
 import {
@@ -91,9 +92,29 @@ export async function resolveTcTokenJid(
 	jid: string,
 	getLIDForPN: (pn: string) => Promise<string | null>
 ): Promise<string> {
-	if (isLidUser(jid)) return jid
+	if (isLidUser(jid) || isHostedLidUser(jid)) return jid
 	const lid = await getLIDForPN(jid)
 	return lid ?? jid
+}
+
+export async function resolvePeerRecipientTokenContext(
+	jid: string,
+	getLIDForPN: (pn: string) => Promise<string | null>,
+	getPNForLID: (lid: string) => Promise<string | null>
+): Promise<{ tcTokenJid: string; peerRecipientLid?: string; peerRecipientPn?: string }> {
+	if (isLidUser(jid) || isHostedLidUser(jid)) {
+		const pn = await getPNForLID(jid)
+		return {
+			tcTokenJid: jid,
+			...(pn && (isPnUser(pn) || isHostedPnUser(pn)) ? { peerRecipientPn: pn } : {})
+		}
+	}
+
+	const lid = await getLIDForPN(jid)
+	return {
+		tcTokenJid: lid ?? jid,
+		...(lid && (isLidUser(lid) || isHostedLidUser(lid)) ? { peerRecipientLid: lid } : {})
+	}
 }
 
 /** Resolve target JID for issuing privacy token based on AB prop 14303 */
@@ -104,12 +125,12 @@ export async function resolveIssuanceJid(
 	getPNForLID?: (lid: string) => Promise<string | null>
 ): Promise<string> {
 	if (issueToLid) {
-		if (isLidUser(jid)) return jid
+		if (isLidUser(jid) || isHostedLidUser(jid)) return jid
 		const lid = await getLIDForPN(jid)
 		return lid ?? jid
 	}
 
-	if (!isLidUser(jid)) return jid
+	if (!isLidUser(jid) && !isHostedLidUser(jid)) return jid
 	if (getPNForLID) {
 		const pn = await getPNForLID(jid)
 		return pn ?? jid
@@ -169,6 +190,7 @@ export async function buildTcTokenFromJid({
 type StoreTcTokensParams = {
 	result: BinaryNode
 	fallbackJid: string
+	aliasJids?: Iterable<string | null | undefined>
 	keys: SignalKeyStoreWithTransaction
 	getLIDForPN: (pn: string) => Promise<string | null>
 	onNewJidStored?: (jid: string) => void
@@ -177,6 +199,7 @@ type StoreTcTokensParams = {
 export async function storeTcTokensFromIqResult({
 	result,
 	fallbackJid,
+	aliasJids = [],
 	keys,
 	getLIDForPN,
 	onNewJidStored
@@ -193,25 +216,56 @@ export async function storeTcTokensFromIqResult({
 		// In notifications tokenNode.attrs.jid is your own device JID, not the sender's
 		const rawJid = jidNormalizedUser(fallbackJid || tokenNode.attrs.jid)
 		if (!isRegularUser(rawJid)) continue
-		const storageJid = await resolveTcTokenJid(rawJid, getLIDForPN)
-		const existingTcData = await keys.get('tctoken', [storageJid])
-		const existingEntry = existingTcData[storageJid]
 
-		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
 		const incomingTs = tokenNode.attrs.t ? Number(tokenNode.attrs.t) : 0
 		// timestamp-less tokens would be immediately expired
 		if (!incomingTs) continue
-		if (existingTs > 0 && existingTs > incomingTs) continue
 
-		await keys.set({
-			tctoken: {
-				[storageJid]: {
-					...existingEntry,
-					token: Buffer.from(tokenNode.content),
-					timestamp: tokenNode.attrs.t
-				}
+		const storageJids = new Set<string>()
+		const addStorageJid = async (jid: string | null | undefined) => {
+			if (!jid) return
+			const normalized = jidNormalizedUser(jid)
+			if (!isRegularUser(normalized)) return
+			storageJids.add(normalized)
+			storageJids.add(await resolveTcTokenJid(normalized, getLIDForPN))
+		}
+
+		await addStorageJid(rawJid)
+		for (const aliasJid of aliasJids) {
+			await addStorageJid(aliasJid)
+		}
+
+		const existingTcData = await keys.get('tctoken', [...storageJids])
+		const writes: Record<string, { token: Buffer; timestamp?: string; senderTimestamp?: number }> = {}
+
+		for (const storageJid of storageJids) {
+			const existingEntry = existingTcData[storageJid]
+			const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
+			if (existingTs > 0 && existingTs > incomingTs) continue
+
+			writes[storageJid] = {
+				...existingEntry,
+				token: Buffer.from(tokenNode.content),
+				timestamp: tokenNode.attrs.t
 			}
-		})
-		onNewJidStored?.(storageJid)
+		}
+
+		if (Object.keys(writes).length) {
+			await keys.set({ tctoken: writes })
+			for (const storageJid of Object.keys(writes)) {
+				onNewJidStored?.(storageJid)
+			}
+		}
 	}
+}
+
+/**
+ * Compute cstoken = HMAC-SHA256(nctSalt, UTF8(recipientLid)).
+ * Deterministic fallback when no tctoken exists (first-contact, post-restriction).
+ * Ref: WAWebSendMsgCreateFanoutStanza.genCsTokenBody
+ */
+export function computeCsToken(nctSalt: Uint8Array, recipientLid: string): Uint8Array {
+	const hmac = createHmac('sha256', nctSalt)
+	hmac.update(recipientLid, 'utf8')
+	return new Uint8Array(hmac.digest())
 }

@@ -1,12 +1,15 @@
 import { jest } from '@jest/globals'
+import { createHmac } from 'crypto'
 import { type SignalKeyStoreWithTransaction } from '../../Types'
 import { SERVER_ERROR_CODES } from '../../Utils'
 import {
 	buildMergedTcTokenIndexWrite,
 	buildTcTokenFromJid,
+	computeCsToken,
 	isTcTokenExpired,
 	readTcTokenIndex,
 	resolveIssuanceJid,
+	resolvePeerRecipientTokenContext,
 	shouldSendNewTcToken,
 	storeTcTokensFromIqResult,
 	TC_TOKEN_INDEX_KEY
@@ -140,7 +143,7 @@ describe('storeTcTokensFromIqResult', () => {
 		expect(setCall.tctoken[CONTACT_JID]).toBeDefined()
 	})
 
-	it('resolves fallbackJid to LID via getLIDForPN', async () => {
+	it('stores fallbackJid and resolved LID aliases via getLIDForPN', async () => {
 		const node = makeNotificationNode(MY_DEVICE_JID, TOKEN_BYTES, RECENT_TS)
 		const getLIDForPN = jest.fn<(pn: string) => Promise<string | null>>().mockResolvedValue(CONTACT_LID)
 
@@ -154,11 +157,30 @@ describe('storeTcTokensFromIqResult', () => {
 		expect(mockKeys.set).toHaveBeenCalledTimes(1)
 		const setCall = mockKeys.set.mock.calls[0]![0] as any
 		expect(setCall.tctoken[CONTACT_LID]).toBeDefined()
-		expect(setCall.tctoken[CONTACT_JID]).toBeUndefined()
+		expect(setCall.tctoken[CONTACT_JID]).toBeDefined()
 		expect(setCall.tctoken[MY_DEVICE_JID]).toBeUndefined()
 	})
 
-	it('calls onNewJidStored with the resolved storage JID', async () => {
+	it('stores explicit alias JIDs to survive PN/LID mapping races', async () => {
+		const node = makeNotificationNode(MY_DEVICE_JID, TOKEN_BYTES, RECENT_TS)
+		const getLIDForPN = jest.fn<(pn: string) => Promise<string | null>>().mockImplementation(async jid => {
+			return jid === CONTACT_JID ? CONTACT_LID : null
+		})
+
+		await storeTcTokensFromIqResult({
+			result: node,
+			fallbackJid: CONTACT_LID,
+			aliasJids: [CONTACT_JID],
+			keys: mockKeys,
+			getLIDForPN
+		})
+
+		const setCall = mockKeys.set.mock.calls[0]![0] as any
+		expect(setCall.tctoken[CONTACT_LID]).toBeDefined()
+		expect(setCall.tctoken[CONTACT_JID]).toBeDefined()
+	})
+
+	it('calls onNewJidStored with the storage JID aliases', async () => {
 		const node = makeNotificationNode(MY_DEVICE_JID, TOKEN_BYTES, RECENT_TS)
 		const onNewJidStored = jest.fn()
 
@@ -1016,6 +1038,48 @@ describe('resolveIssuanceJid', () => {
 	})
 })
 
+describe('resolvePeerRecipientTokenContext', () => {
+	const PN_JID = 'user@s.whatsapp.net'
+	const LID_JID = 'user@lid'
+
+	it('adds peer_recipient_lid and uses LID token key for PN-addressed sends', async () => {
+		const getLIDForPN = jest.fn<(pn: string) => Promise<string | null>>().mockResolvedValue(LID_JID)
+		const getPNForLID = jest.fn<(lid: string) => Promise<string | null>>()
+
+		const result = await resolvePeerRecipientTokenContext(PN_JID, getLIDForPN, getPNForLID)
+
+		expect(result).toEqual({
+			tcTokenJid: LID_JID,
+			peerRecipientLid: LID_JID
+		})
+		expect(getLIDForPN).toHaveBeenCalledWith(PN_JID)
+		expect(getPNForLID).not.toHaveBeenCalled()
+	})
+
+	it('adds peer_recipient_pn and keeps LID token key for LID-addressed sends', async () => {
+		const getLIDForPN = jest.fn<(pn: string) => Promise<string | null>>()
+		const getPNForLID = jest.fn<(lid: string) => Promise<string | null>>().mockResolvedValue(PN_JID)
+
+		const result = await resolvePeerRecipientTokenContext(LID_JID, getLIDForPN, getPNForLID)
+
+		expect(result).toEqual({
+			tcTokenJid: LID_JID,
+			peerRecipientPn: PN_JID
+		})
+		expect(getLIDForPN).not.toHaveBeenCalled()
+		expect(getPNForLID).toHaveBeenCalledWith(LID_JID)
+	})
+
+	it('leaves attrs empty when no mapping exists', async () => {
+		const getLIDForPN = jest.fn<(pn: string) => Promise<string | null>>().mockResolvedValue(null)
+		const getPNForLID = jest.fn<(lid: string) => Promise<string | null>>()
+
+		const result = await resolvePeerRecipientTokenContext(PN_JID, getLIDForPN, getPNForLID)
+
+		expect(result).toEqual({ tcTokenJid: PN_JID })
+	})
+})
+
 describe('PSA and bot JID detection', () => {
 	it('PSA_WID is 0@c.us', () => {
 		expect(PSA_WID).toBe('0@c.us')
@@ -1086,5 +1150,142 @@ describe('tctoken index helpers', () => {
 		const write = await buildMergedTcTokenIndexWrite(mockKeys, [TC_TOKEN_INDEX_KEY, '', 'a@lid'])
 		const merged = JSON.parse(write[TC_TOKEN_INDEX_KEY].token.toString())
 		expect(merged).toEqual(['a@lid'])
+	})
+})
+
+// ─── cstoken (NCT — Client-Side Token) ────────────────────────────────
+
+describe('computeCsToken', () => {
+	const SALT = new Uint8Array([
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13,
+		0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20
+	])
+
+	it('produces correct HMAC-SHA256 output', () => {
+		const lid = '12345:67@lid'
+		const result = computeCsToken(SALT, lid)
+
+		// Verify against Node.js crypto directly
+		const expected = createHmac('sha256', SALT).update(lid, 'utf8').digest()
+		expect(Buffer.from(result)).toEqual(expected)
+	})
+
+	it('returns 32 bytes (SHA-256 output size)', () => {
+		const result = computeCsToken(SALT, 'test@lid')
+		expect(result.length).toBe(32)
+	})
+
+	it('returns Uint8Array', () => {
+		const result = computeCsToken(SALT, 'test@lid')
+		expect(result).toBeInstanceOf(Uint8Array)
+	})
+
+	it('is deterministic — same inputs produce same output', () => {
+		const lid = '98765:12@lid'
+		const result1 = computeCsToken(SALT, lid)
+		const result2 = computeCsToken(SALT, lid)
+		expect(Buffer.from(result1)).toEqual(Buffer.from(result2))
+	})
+
+	it('different LIDs produce different tokens', () => {
+		const token1 = computeCsToken(SALT, 'alice:1@lid')
+		const token2 = computeCsToken(SALT, 'bob:2@lid')
+		expect(Buffer.from(token1)).not.toEqual(Buffer.from(token2))
+	})
+
+	it('different salts produce different tokens', () => {
+		const salt2 = new Uint8Array(32).fill(0xff)
+		const lid = 'same@lid'
+		const token1 = computeCsToken(SALT, lid)
+		const token2 = computeCsToken(salt2, lid)
+		expect(Buffer.from(token1)).not.toEqual(Buffer.from(token2))
+	})
+
+	it('handles long LID strings', () => {
+		const longLid = '1234567890'.repeat(10) + '@lid'
+		const result = computeCsToken(SALT, longLid)
+		expect(result.length).toBe(32)
+	})
+
+	it('handles empty string LID (edge case)', () => {
+		const result = computeCsToken(SALT, '')
+		expect(result.length).toBe(32)
+		// Should still be valid HMAC output
+		const expected = createHmac('sha256', SALT).update('', 'utf8').digest()
+		expect(Buffer.from(result)).toEqual(expected)
+	})
+})
+
+// ─── cstoken fallback integration ──────────────────────────────────────
+
+describe('cstoken fallback logic', () => {
+	const SALT = new Uint8Array(32).fill(0xab)
+	const RECIPIENT_LID = '12345:67@lid'
+	const VALID_TOKEN = Buffer.from([4, 1, 33, 254, 110, 59])
+
+	it('tctoken takes priority over cstoken when both available', () => {
+		// Simulate the fallback logic from messages-send.ts
+		const tcTokenBuffer = VALID_TOKEN
+		const nctSalt = SALT
+
+		// tctoken exists → should use it, not cstoken
+		let usedToken: { tag: string; content: Uint8Array } | null = null
+
+		if (tcTokenBuffer?.length) {
+			usedToken = { tag: 'tctoken', content: tcTokenBuffer }
+		} else if (nctSalt?.length) {
+			usedToken = { tag: 'cstoken', content: computeCsToken(nctSalt, RECIPIENT_LID) }
+		}
+
+		expect(usedToken).not.toBeNull()
+		expect(usedToken!.tag).toBe('tctoken')
+		expect(usedToken!.content).toBe(VALID_TOKEN)
+	})
+
+	it('cstoken used when tctoken is missing', () => {
+		const tcTokenBuffer = undefined as Buffer | undefined
+		const nctSalt: Uint8Array | undefined = SALT
+
+		let usedToken: { tag: string; content: Uint8Array } | null = null
+
+		if (tcTokenBuffer?.length) {
+			usedToken = { tag: 'tctoken', content: tcTokenBuffer }
+		} else if (nctSalt?.length) {
+			usedToken = { tag: 'cstoken', content: computeCsToken(nctSalt, RECIPIENT_LID) }
+		}
+
+		expect(usedToken).not.toBeNull()
+		expect(usedToken!.tag).toBe('cstoken')
+		expect(usedToken!.content.length).toBe(32)
+	})
+
+	it('no token when both tctoken and nctSalt are missing', () => {
+		const tcTokenBuffer = undefined as Buffer | undefined
+		const nctSalt = undefined as Uint8Array | undefined
+
+		let usedToken: { tag: string; content: Uint8Array } | null = null
+
+		if (tcTokenBuffer?.length) {
+			usedToken = { tag: 'tctoken', content: tcTokenBuffer }
+		} else if (nctSalt?.length) {
+			usedToken = { tag: 'cstoken', content: computeCsToken(nctSalt, RECIPIENT_LID) }
+		}
+
+		expect(usedToken).toBeNull()
+	})
+
+	it('cstoken used when tctoken is empty buffer', () => {
+		const tcTokenBuffer = Buffer.alloc(0)
+		const nctSalt = SALT
+
+		let usedToken: { tag: string; content: Uint8Array } | null = null
+
+		if (tcTokenBuffer?.length) {
+			usedToken = { tag: 'tctoken', content: tcTokenBuffer }
+		} else if (nctSalt?.length) {
+			usedToken = { tag: 'cstoken', content: computeCsToken(nctSalt, RECIPIENT_LID) }
+		}
+
+		expect(usedToken!.tag).toBe('cstoken')
 	})
 })

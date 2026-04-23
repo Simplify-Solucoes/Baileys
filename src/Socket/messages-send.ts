@@ -42,9 +42,10 @@ import { makeKeyedMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
 	buildMergedTcTokenIndexWrite,
+	computeCsToken,
 	isTcTokenExpired,
 	resolveIssuanceJid,
-	resolveTcTokenJid,
+	resolvePeerRecipientTokenContext,
 	shouldSendNewTcToken,
 	storeTcTokensFromIqResult
 } from '../Utils/tc-token-utils'
@@ -105,6 +106,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 
 	/**
 	 * Set of tctoken storage JIDs with a fire-and-forget `issuePrivacyTokens` IQ in flight.
@@ -1038,12 +1040,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
+			// WA Web never attaches tctoken to peer (AppStateSync) messages; server rejects with 479.
+			const isPeerMessage = additionalAttributes?.['category'] === 'peer'
+			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage
+			const peerTokenContext = is1on1Send
+				? await resolvePeerRecipientTokenContext(destinationJid, getLIDForPN, getPNForLID)
+				: { tcTokenJid: destinationJid }
+			const { tcTokenJid, peerRecipientLid, peerRecipientPn } = peerTokenContext
+
 			const stanza: BinaryNode = {
 				tag: 'message',
 				attrs: {
 					id: msgId,
 					to: destinationJid,
 					type: getMessageType(message),
+					...(peerRecipientLid ? { peer_recipient_lid: peerRecipientLid } : {}),
+					...(peerRecipientPn ? { peer_recipient_pn: peerRecipientPn } : {}),
 					...(additionalAttributes || {})
 				},
 				content: binaryNodeContent
@@ -1105,12 +1117,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
-			// WA Web never attaches tctoken to peer (AppStateSync) messages — server rejects with 479
-			const isPeerMessage = additionalAttributes?.['category'] === 'peer'
-			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage
-
-			// Resolve destination to LID for tctoken storage — matches Signal session key pattern
-			const tcTokenJid = is1on1Send ? await resolveTcTokenJid(destinationJid, getLIDForPN) : destinationJid
 			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', [tcTokenJid]) : {}
 			const existingTokenEntry = contactTcTokenData[tcTokenJid]
 			let tcTokenBuffer = existingTokenEntry?.token
@@ -1137,6 +1143,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					attrs: {},
 					content: tcTokenBuffer
 				})
+			} else if (
+				is1on1Send &&
+				authState.creds.nctSalt?.length &&
+				tcTokenJid &&
+				(isLidUser(tcTokenJid) || isHostedLidUser(tcTokenJid))
+			) {
+				// Fallback: no tctoken from recipient, compute cstoken from NCT salt
+				// WA Web skips cstoken when accountLid is null (no LID mapping)
+				const csToken = computeCsToken(authState.creds.nctSalt, tcTokenJid)
+				;(stanza.content as BinaryNode[]).push({
+					tag: 'cstoken',
+					attrs: {},
+					content: csToken
+				})
+				logger.debug({ jid: destinationJid }, 'cstoken fallback - no tctoken available')
 			}
 
 			if (!isNewsletter && buttonType && messages) {
@@ -1190,7 +1211,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			) {
 				inFlightTcTokenIssuance.add(tcTokenJid)
 				const issueTimestamp = unixTimestampSeconds()
-				const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 				resolveIssuanceJid(destinationJid, sock.serverProps.lidTrustedTokenIssueToLid, getLIDForPN, getPNForLID)
 					.then(issueJid => issuePrivacyTokens([issueJid], issueTimestamp))
 					.then(async result => {

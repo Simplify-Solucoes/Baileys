@@ -984,6 +984,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await storeTcTokensFromIqResult({
 			result: node,
 			fallbackJid,
+			aliasJids: [from, senderLid],
 			keys: authState.keys,
 			getLIDForPN,
 			onNewJidStored: trackTcTokenJid
