@@ -1,22 +1,72 @@
 import type { SignalKeyStoreWithTransaction } from '../Types'
 import type { BinaryNode } from '../WABinary'
-import { getBinaryNodeChild, getBinaryNodeChildren, isLidUser, jidNormalizedUser } from '../WABinary'
+import {
+	getBinaryNodeChild,
+	getBinaryNodeChildren,
+	isHostedLidUser,
+	isHostedPnUser,
+	isJidMetaAI,
+	isLidUser,
+	isPnUser,
+	jidNormalizedUser
+} from '../WABinary'
 
-/** 7 days in seconds — matches WA Web AB prop tctoken_duration */
-const TC_TOKEN_BUCKET_DURATION = 604800
-/** 4 buckets → ~28-day rolling window — matches WA Web AB prop tctoken_num_buckets */
-const TC_TOKEN_NUM_BUCKETS = 4
+// Same phone-number pattern as WABinary's isJidBot, applied against the user
+// part so the check is invariant to @c.us ↔ @s.whatsapp.net normalization.
+const BOT_PHONE_REGEX = /^1313555\d{4}$|^131655500\d{2}$/
 
 /**
- * Check if a received token is expired using WA Web's rolling bucket algorithm.
- * Reference: WAWebTrustedContactsUtils.isTokenExpired
- *
- * Uses Receiver mode constants (tctoken_duration, tctoken_num_buckets).
- * NOTE: WA Web distinguishes Sender vs Receiver mode via AB props
- * (tctoken_duration_sender / tctoken_num_buckets_sender). Currently both
- * use identical values (604800 / 4), so we use a single function for both.
- * If WA ever diverges these, add a `mode` parameter here.
+ * Mirrors WA Web's `Wid.isRegularUser()` (user ∧ ¬PSA ∧ ¬Bot). Used to gate tctoken
+ * storage against malformed notifications — WA Web filters server-side but we
+ * defend here for parity with `WAWebSetTcTokenChatAction.handleIncomingTcToken`.
+ * Works for both pre- and post-normalized JIDs (`@c.us` vs `@s.whatsapp.net`).
  */
+function isRegularUser(jid: string | undefined): boolean {
+	if (!jid) return false
+	const user = jid.split('@')[0] ?? ''
+	if (user === '0') return false // PSA
+	if (BOT_PHONE_REGEX.test(user)) return false // Bot by phone pattern
+	if (isJidMetaAI(jid)) return false // MetaAI (@bot server)
+	return !!(isPnUser(jid) || isLidUser(jid) || isHostedPnUser(jid) || isHostedLidUser(jid) || jid.endsWith('@c.us'))
+}
+
+const TC_TOKEN_BUCKET_DURATION = 604800 // 7 days
+const TC_TOKEN_NUM_BUCKETS = 4 // ~28-day rolling window
+
+/** Sentinel key under `tctoken` store holding a JSON array of tracked storage JIDs for cross-session pruning. */
+export const TC_TOKEN_INDEX_KEY = '__index'
+
+/** Read the persisted tctoken JID index and return its entries (never contains the sentinel key itself). */
+export async function readTcTokenIndex(keys: SignalKeyStoreWithTransaction): Promise<string[]> {
+	const data = await keys.get('tctoken', [TC_TOKEN_INDEX_KEY])
+	const entry = data[TC_TOKEN_INDEX_KEY]
+	if (!entry?.token?.length) return []
+	try {
+		const parsed = JSON.parse(Buffer.from(entry.token).toString())
+		if (!Array.isArray(parsed)) return []
+		return parsed.filter((j): j is string => typeof j === 'string' && j.length > 0 && j !== TC_TOKEN_INDEX_KEY)
+	} catch {
+		return []
+	}
+}
+
+/** Build a SignalDataSet fragment that writes the merged index (persisted ∪ added) under the sentinel key. */
+export async function buildMergedTcTokenIndexWrite(
+	keys: SignalKeyStoreWithTransaction,
+	addedJids: Iterable<string>
+): Promise<{ [TC_TOKEN_INDEX_KEY]: { token: Buffer } }> {
+	const persisted = await readTcTokenIndex(keys)
+	const merged = new Set(persisted)
+	for (const jid of addedJids) {
+		if (jid && jid !== TC_TOKEN_INDEX_KEY) merged.add(jid)
+	}
+
+	return {
+		[TC_TOKEN_INDEX_KEY]: { token: Buffer.from(JSON.stringify([...merged])) }
+	}
+}
+
+// WA Web has separate sender/receiver AB props for these but they're identical today
 export function isTcTokenExpired(timestamp: number | string | null | undefined): boolean {
 	if (timestamp === null || timestamp === undefined) return true
 	const ts = typeof timestamp === 'string' ? parseInt(timestamp) : timestamp
@@ -28,12 +78,6 @@ export function isTcTokenExpired(timestamp: number | string | null | undefined):
 	return ts < cutoffTimestamp
 }
 
-/**
- * Check if we should issue a new token to this contact (bucket boundary crossed).
- * Reference: WAWebTrustedContactsUtils.shouldSendNewToken
- *
- * Returns true if senderTimestamp is null/undefined or in a previous bucket.
- */
 export function shouldSendNewTcToken(senderTimestamp: number | undefined): boolean {
 	if (senderTimestamp === undefined) return true
 	const now = Math.floor(Date.now() / 1000)
@@ -42,17 +86,7 @@ export function shouldSendNewTcToken(senderTimestamp: number | undefined): boole
 	return currentBucket > senderBucket
 }
 
-/**
- * Resolve a JID to its LID for tctoken storage, mirroring how Signal sessions
- * use LID keys via resolveLIDSignalAddress.
- *
- * WA Web always resolves to LID before storing/looking up tctokens:
- * `senderLid ?? toLid(from)` (WAWebSetTcTokenChatAction.handleIncomingTcToken)
- *
- * @param jid - The JID to resolve (can be PN or LID)
- * @param getLIDForPN - Resolver function (from lidMapping)
- * @returns The LID if mapping exists, otherwise the original JID
- */
+/** Resolve JID to LID for tctoken storage (WA Web stores under LID) */
 export async function resolveTcTokenJid(
 	jid: string,
 	getLIDForPN: (pn: string) => Promise<string | null>
@@ -62,13 +96,35 @@ export async function resolveTcTokenJid(
 	return lid ?? jid
 }
 
+/** Resolve target JID for issuing privacy token based on AB prop 14303 */
+export async function resolveIssuanceJid(
+	jid: string,
+	issueToLid: boolean,
+	getLIDForPN: (pn: string) => Promise<string | null>,
+	getPNForLID?: (lid: string) => Promise<string | null>
+): Promise<string> {
+	if (issueToLid) {
+		if (isLidUser(jid)) return jid
+		const lid = await getLIDForPN(jid)
+		return lid ?? jid
+	}
+
+	if (!isLidUser(jid)) return jid
+	if (getPNForLID) {
+		const pn = await getPNForLID(jid)
+		return pn ?? jid
+	}
+
+	return jid
+}
+
 type TcTokenParams = {
 	jid: string
 	baseContent?: BinaryNode[]
 	authState: {
 		keys: SignalKeyStoreWithTransaction
 	}
-	getLIDForPN?: (pn: string) => Promise<string | null>
+	getLIDForPN: (pn: string) => Promise<string | null>
 }
 
 export async function buildTcTokenFromJid({
@@ -78,15 +134,21 @@ export async function buildTcTokenFromJid({
 	getLIDForPN
 }: TcTokenParams): Promise<BinaryNode[] | undefined> {
 	try {
-		const storageJid = getLIDForPN ? await resolveTcTokenJid(jid, getLIDForPN) : jid
+		const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
 		const tcTokenData = await authState.keys.get('tctoken', [storageJid])
 		const entry = tcTokenData?.[storageJid]
 		const tcTokenBuffer = entry?.token
 
 		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
-			// Opportunistic cleanup: remove expired token from store
 			if (tcTokenBuffer) {
-				await authState.keys.set({ tctoken: { [storageJid]: null } })
+				// Preserve senderTimestamp so shouldSendNewTcToken() keeps its dedupe state
+				// after we drop the unusable peer token. Only wipe the record entirely when
+				// there's nothing worth keeping.
+				const cleared =
+					entry?.senderTimestamp !== undefined
+						? { token: Buffer.alloc(0), senderTimestamp: entry.senderTimestamp }
+						: null
+				await authState.keys.set({ tctoken: { [storageJid]: cleared } })
 			}
 
 			return baseContent.length > 0 ? baseContent : undefined
@@ -109,15 +171,9 @@ type StoreTcTokensParams = {
 	fallbackJid: string
 	keys: SignalKeyStoreWithTransaction
 	getLIDForPN: (pn: string) => Promise<string | null>
-	/** Optional callback when a new JID is stored (for index tracking) */
 	onNewJidStored?: (jid: string) => void
 }
 
-/**
- * Parse and store tctoken(s) from an IQ result node.
- * Includes timestamp monotonicity guard matching WA Web's handleIncomingTcToken.
- * Used by both the blocking fetch (messages-send) and IQ response (messages-recv) paths.
- */
 export async function storeTcTokensFromIqResult({
 	result,
 	fallbackJid,
@@ -134,24 +190,18 @@ export async function storeTcTokensFromIqResult({
 			continue
 		}
 
-		const rawJid = jidNormalizedUser(tokenNode.attrs.jid || fallbackJid)
+		// In notifications tokenNode.attrs.jid is your own device JID, not the sender's
+		const rawJid = jidNormalizedUser(fallbackJid || tokenNode.attrs.jid)
+		if (!isRegularUser(rawJid)) continue
 		const storageJid = await resolveTcTokenJid(rawJid, getLIDForPN)
 		const existingTcData = await keys.get('tctoken', [storageJid])
 		const existingEntry = existingTcData[storageJid]
 
-		// Timestamp monotonicity guard — only store if incoming timestamp >= existing
-		// Matches WA Web handleIncomingTcToken
 		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
 		const incomingTs = tokenNode.attrs.t ? Number(tokenNode.attrs.t) : 0
-		if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
-			continue
-		}
-
-		// Don't overwrite a valid timestamped token with a timestamp-less one —
-		// it would be treated as immediately expired by isTcTokenExpired
-		if (existingTs > 0 && !incomingTs) {
-			continue
-		}
+		// timestamp-less tokens would be immediately expired
+		if (!incomingTs) continue
+		if (existingTs > 0 && existingTs > incomingTs) continue
 
 		await keys.set({
 			tctoken: {
