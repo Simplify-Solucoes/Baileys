@@ -452,7 +452,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		)
 	}
 
-
 	let assertSessions = async (jids: string[], force?: boolean) => {
 		let didFetchNewSession = false
 		const uniqueJids = [...new Set(jids)] // Deduplicate JIDs
@@ -565,10 +564,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		recipientJids: string[],
 		message: proto.IMessage,
 		extraAttrs?: BinaryNode['attrs'],
-		dsmMessage?: proto.IMessage
+		dsmMessage?: proto.IMessage,
+		perRecipientNodes: Map<string, BinaryNode[]> = new Map()
 	) => {
 		if (!recipientJids.length) {
-			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false }
+			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false, pkmsgCount: 0 }
 		}
 
 		const patched = await patchMessageBeforeSending(message, recipientJids)
@@ -577,6 +577,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			: recipientJids.map(jid => ({ recipientJid: jid, message: patched }))
 
 		let shouldIncludeDeviceIdentity = false
+		let pkmsgCount = 0
 		const meId = authState.creds.me!.id
 		const meLid = authState.creds.me?.lid
 		const meLidUser = meLid ? jidDecode(meLid)?.user : null
@@ -610,18 +611,25 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 						if (type === 'pkmsg') {
 							shouldIncludeDeviceIdentity = true
+							pkmsgCount += 1
+						}
+
+						const content: BinaryNode[] = [
+							{
+								tag: 'enc',
+								attrs: { v: '2', type, ...(extraAttrs || {}) },
+								content: ciphertext
+							}
+						]
+						const extraContent = perRecipientNodes.get(jid)
+						if (extraContent?.length) {
+							content.push(...extraContent)
 						}
 
 						return {
 							tag: 'to',
 							attrs: { jid },
-							content: [
-								{
-									tag: 'enc',
-									attrs: { v: '2', type, ...(extraAttrs || {}) },
-									content: ciphertext
-								}
-							]
+							content
 						}
 					})
 
@@ -639,7 +647,104 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			throw new Boom('All encryptions failed', { statusCode: 500 })
 		}
 
-		return { nodes, shouldIncludeDeviceIdentity }
+		return { nodes, shouldIncludeDeviceIdentity, pkmsgCount }
+	}
+
+	const getEncryptedContentLength = (nodes: BinaryNode[]): number => {
+		let length = 0
+		for (const node of nodes) {
+			if (node.content instanceof Uint8Array) {
+				length += node.content.length
+				continue
+			}
+
+			if (Array.isArray(node.content)) {
+				length += getEncryptedContentLength(node.content)
+			}
+		}
+
+		return length
+	}
+
+	const getTraffAnonPadLength = (payloadLength: number): number => {
+		if (payloadLength <= 0) {
+			return 0
+		}
+
+		return Math.min(Math.floor((payloadLength + 140) * 0.02), 100_000)
+	}
+
+	const buildStatusPrivacyTokenNodes = async (recipientJids: string[]) => {
+		const candidateByRecipient = new Map<string, string[]>()
+		const allCandidates = new Set<string>()
+
+		await Promise.all(
+			recipientJids.map(async recipientJid => {
+				const normalized = jidNormalizedUser(recipientJid)
+				const candidates = new Set<string>()
+				if (normalized) {
+					candidates.add(normalized)
+				}
+
+				if (isPnUser(normalized) || isHostedPnUser(normalized)) {
+					const lid = await getLIDForPN(normalized)
+					if (lid) {
+						candidates.add(jidNormalizedUser(lid))
+					}
+				} else if (isLidUser(normalized) || isHostedLidUser(normalized)) {
+					const pn = await getPNForLID(normalized)
+					if (pn) {
+						candidates.add(jidNormalizedUser(pn))
+					}
+				}
+
+				const list = [...candidates].filter(Boolean)
+				candidateByRecipient.set(recipientJid, list)
+				for (const candidate of list) {
+					allCandidates.add(candidate)
+				}
+			})
+		)
+
+		if (!allCandidates.size) {
+			return new Map<string, BinaryNode[]>()
+		}
+
+		const tcTokenData = await authState.keys.get('tctoken', [...allCandidates])
+		const expiredWrites: Record<string, { token: Buffer; senderTimestamp?: number } | null> = {}
+		const nodesByRecipient = new Map<string, BinaryNode[]>()
+
+		for (const [recipientJid, candidates] of candidateByRecipient) {
+			for (const candidate of candidates) {
+				const entry = tcTokenData[candidate]
+				if (!entry?.token?.length) {
+					continue
+				}
+
+				if (isTcTokenExpired(entry?.timestamp)) {
+					expiredWrites[candidate] =
+						entry.senderTimestamp !== undefined
+							? { token: Buffer.alloc(0), senderTimestamp: entry.senderTimestamp }
+							: null
+					continue
+				}
+
+				nodesByRecipient.set(recipientJid, [
+					{
+						tag: 'tctoken',
+						attrs: {},
+						content: entry.token
+					}
+				])
+				break
+			}
+		}
+
+		if (Object.keys(expiredWrites).length) {
+			await authState.keys.set({ tctoken: expiredWrites })
+		}
+
+		return nodesByRecipient
 	}
 
 	const relayMessage = async (
@@ -679,6 +784,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: DeviceWithJid[] = []
 		let reportingMessage: proto.IMessage | undefined
+		let statusPkmsgCount = 0
 
 		const meMsg: proto.IMessage = {
 			deviceSentMessage: {
@@ -814,11 +920,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					? additionalDevices.filter(device => {
 							const deviceJid = device.jid
 							const isOwnPnDevice =
-								(isPnUser(deviceJid) || isHostedPnUser(deviceJid)) &&
-								areJidsSameUser(deviceJid, meId)
+								(isPnUser(deviceJid) || isHostedPnUser(deviceJid)) && areJidsSameUser(deviceJid, meId)
 
 							return !isOwnPnDevice
-					  })
+						})
 					: additionalDevices
 				devices.push(...statusFilteredDevices)
 
@@ -875,8 +980,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const senderKeySessionTargets = senderKeyRecipients
 					await assertSessions(senderKeySessionTargets)
 
-					const result = await createParticipantNodes(senderKeyRecipients, senderKeyMsg, extraAttrs)
+					const statusPrivacyTokenNodes = isStatus
+						? await buildStatusPrivacyTokenNodes(senderKeyRecipients)
+						: new Map<string, BinaryNode[]>()
+					const result = await createParticipantNodes(
+						senderKeyRecipients,
+						senderKeyMsg,
+						extraAttrs,
+						undefined,
+						statusPrivacyTokenNodes
+					)
 					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
+					if (isStatus) {
+						statusPkmsgCount += result.pkmsgCount
+					}
 
 					participants.push(...result.nodes)
 				}
@@ -1079,6 +1196,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			if (shouldIncludeDeviceIdentity) {
+				if (isStatus && statusPkmsgCount > 0) {
+					;(stanza.content as BinaryNode[]).push({
+						tag: 'padding',
+						attrs: {},
+						content: randomBytes(statusPkmsgCount * 1571)
+					})
+
+					const taPadLength = getTraffAnonPadLength(getEncryptedContentLength(binaryNodeContent))
+					if (taPadLength > 0) {
+						;(stanza.content as BinaryNode[]).push({
+							tag: 'ta_pad',
+							attrs: {},
+							content: Buffer.alloc(taPadLength)
+						})
+					}
+				}
+
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'device-identity',
 					attrs: {},
