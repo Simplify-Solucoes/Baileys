@@ -161,6 +161,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		return []
 	}
 
+	const isStatusPrivacyNotFoundError = (error: unknown) => {
+		if (error instanceof Boom && error.output?.statusCode === 404) {
+			return true
+		}
+
+		if (typeof error !== 'object' || error === null) {
+			return false
+		}
+
+		const err = error as { message?: unknown }
+		return err.message === 'item-not-found'
+	}
+
 	const fetchPrivacySettings = async (force = false) => {
 		if (!privacySettings || force) {
 			const { content } = await query({
@@ -209,7 +222,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					statusPrivacySettings = parsed
 				}
 			} catch (error) {
-				if (error instanceof Boom && error.output?.statusCode === 404) {
+				if (isStatusPrivacyNotFoundError(error)) {
 					statusPrivacySettings = [DEFAULT_STATUS_PRIVACY]
 				} else {
 					throw error
