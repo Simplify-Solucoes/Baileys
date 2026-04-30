@@ -249,7 +249,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			}
 
 			const lid = lidByPn.get(jid)
-			return lid ? [lid] : [jid]
+			return lid ? [lid] : []
 		})
 		const dedupedRecipients = Array.from(new Set(resolvedRecipients))
 
