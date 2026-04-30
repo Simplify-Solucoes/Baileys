@@ -757,7 +757,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			additionalNodes,
 			useUserDevicesCache,
 			useCachedGroupMetadata,
-			statusJidList
+			statusJidList,
+			statusSetting: providedStatusSetting
 		}: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me!.id
@@ -773,7 +774,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isNewsletter = server === 'newsletter'
 		const isGroupOrStatus = isGroup || isStatus
 		const finalJid = jid
-		let statusSetting = statusJidList?.length ? 'allowlist' : undefined
+		let statusSetting = providedStatusSetting ?? (statusJidList?.length ? 'allowlist' : undefined)
 
 		msgId = msgId || generateMessageIDV2(meId)
 		useUserDevicesCache = useUserDevicesCache !== false
@@ -1985,6 +1986,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					useCachedGroupMetadata: options.useCachedGroupMetadata,
 					additionalAttributes,
 					statusJidList: options.statusJidList,
+					statusSetting: options.statusSetting,
 					additionalNodes
 				})
 				if (config.emitOwnEvents) {

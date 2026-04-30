@@ -396,6 +396,8 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 	useUserDevicesCache?: boolean
 	/** optional manual override for status@broadcast recipients */
 	statusJidList?: string[]
+	/** optional manual override for status@broadcast privacy setting metadata */
+	statusSetting?: 'contacts' | 'allowlist' | 'denylist'
 }
 
 export type MiscMessageGenerationOptions = MinimalRelayOptions & {
@@ -409,6 +411,8 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
 	mediaUploadTimeoutMs?: number
 	/** optional manual override for status@broadcast recipients */
 	statusJidList?: string[]
+	/** optional manual override for status@broadcast privacy setting metadata */
+	statusSetting?: 'contacts' | 'allowlist' | 'denylist'
 	/** backgroundcolor for status */
 	backgroundColor?: string
 	/** font type for status */
