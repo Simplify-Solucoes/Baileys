@@ -176,48 +176,50 @@ export const prepareWAMessageMedia = async (
 	const isNewsletter = !!options.jid && isJidNewsletter(options.jid)
 	if (isNewsletter) {
 		logger?.info({ key: cacheableKey }, 'Preparing raw media for newsletter')
-		const { filePath, fileSha256, fileLength } = await getRawMediaUploadData(
-			uploadData.media,
-			options.mediaTypeOverride || mediaType,
-			logger
-		)
+		let filePath: string | undefined
+		try {
+			const rawMedia = await getRawMediaUploadData(uploadData.media, options.mediaTypeOverride || mediaType, logger)
+			filePath = rawMedia.filePath
 
-		const fileSha256B64 = fileSha256.toString('base64')
-		const { mediaUrl, directPath } = await options.upload(filePath, {
-			fileEncSha256B64: fileSha256B64,
-			mediaType: mediaType,
-			timeoutMs: options.mediaUploadTimeoutMs
-		})
-
-		await fs.unlink(filePath)
-
-		const obj = WAProto.Message.fromObject({
-			// todo: add more support here
-			[`${mediaType}Message`]: (MessageTypeProto as any)[mediaType].fromObject({
-				url: mediaUrl,
-				directPath,
-				fileSha256,
-				fileLength,
-				...uploadData,
-				media: undefined
+			const fileSha256B64 = rawMedia.fileSha256.toString('base64')
+			const { mediaUrl, directPath } = await options.upload(filePath, {
+				fileEncSha256B64: fileSha256B64,
+				mediaType: mediaType,
+				timeoutMs: options.mediaUploadTimeoutMs
 			})
-		})
 
-		if (uploadData.ptv) {
-			obj.ptvMessage = obj.videoMessage
-			delete obj.videoMessage
+			const obj = WAProto.Message.fromObject({
+				// todo: add more support here
+				[`${mediaType}Message`]: (MessageTypeProto as any)[mediaType].fromObject({
+					url: mediaUrl,
+					directPath,
+					fileSha256: rawMedia.fileSha256,
+					fileLength: rawMedia.fileLength,
+					...uploadData,
+					media: undefined
+				})
+			})
+
+			if (uploadData.ptv) {
+				obj.ptvMessage = obj.videoMessage
+				delete obj.videoMessage
+			}
+
+			if (obj.stickerMessage) {
+				obj.stickerMessage.stickerSentTs = Date.now()
+			}
+
+			if (cacheableKey) {
+				logger?.debug({ cacheableKey }, 'set cache')
+				await options.mediaCache!.set(cacheableKey, WAProto.Message.encode(obj).finish())
+			}
+
+			return obj
+		} finally {
+			if (filePath) {
+				await fs.unlink(filePath).catch(error => logger?.warn({ error }, 'failed to remove raw media tmp file'))
+			}
 		}
-
-		if (obj.stickerMessage) {
-			obj.stickerMessage.stickerSentTs = Date.now()
-		}
-
-		if (cacheableKey) {
-			logger?.debug({ cacheableKey }, 'set cache')
-			await options.mediaCache!.set(cacheableKey, WAProto.Message.encode(obj).finish())
-		}
-
-		return obj
 	}
 
 	const requiresDurationComputation = mediaType === 'audio' && typeof uploadData.seconds === 'undefined'

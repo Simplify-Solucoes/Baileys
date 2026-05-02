@@ -369,6 +369,13 @@ export const getHttpStream = async (url: string | URL, options: RequestInit & { 
 		headers: options.headers as HeadersInit
 	})
 	if (!response.ok) {
+		const body = response.body as ReadableStream | Readable | null
+		if (body instanceof Readable) {
+			body.destroy()
+		} else {
+			await body?.cancel().catch(() => {})
+		}
+
 		throw new Boom(`Failed to fetch stream from ${url}`, { statusCode: response.status, data: { url } })
 	}
 
@@ -668,6 +675,8 @@ type MediaUploadResult = {
 	fbid?: number
 }
 
+const MAX_UPLOAD_RESPONSE_BYTES = 1024 * 1024
+
 export type UploadParams = {
 	url: string
 	filePath: string
@@ -692,6 +701,7 @@ export const uploadWithNodeHttp = async (
 	const fileSize = fileStats.size
 
 	return new Promise((resolve, reject) => {
+		const stream = createReadStream(filePath)
 		const req = httpModule.request(
 			{
 				hostname: parsedUrl.hostname,
@@ -726,7 +736,19 @@ export const uploadWithNodeHttp = async (
 				}
 
 				let body = ''
-				res.on('data', chunk => (body += chunk))
+				let bodyLength = 0
+				res.on('data', chunk => {
+					bodyLength += chunk.length
+					if (bodyLength > MAX_UPLOAD_RESPONSE_BYTES) {
+						res.destroy()
+						stream.destroy()
+						req.destroy()
+						reject(new Error('Upload response too large'))
+						return
+					}
+
+					body += chunk
+				})
 				res.on('end', () => {
 					try {
 						resolve(JSON.parse(body))
@@ -737,13 +759,16 @@ export const uploadWithNodeHttp = async (
 			}
 		)
 
-		req.on('error', reject)
+		req.on('error', err => {
+			stream.destroy()
+			reject(err)
+		})
 		req.on('timeout', () => {
 			req.destroy()
+			stream.destroy()
 			reject(new Error('Upload timeout'))
 		})
 
-		const stream = createReadStream(filePath)
 		stream.pipe(req)
 		stream.on('error', err => {
 			req.destroy()
