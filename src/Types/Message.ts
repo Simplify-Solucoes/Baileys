@@ -280,8 +280,9 @@ export type AnyRegularMessageContent =
 	| ({
 			album: AlbumMessageOptions
 	  } & Contextable &
-			Mentionable)
-	| {
+			Mentionable &
+			ViewOnce)
+	| ({
 			contacts: {
 				displayName?: string
 				contacts: proto.Message.IContactMessage[]
