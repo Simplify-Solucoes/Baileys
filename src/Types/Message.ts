@@ -275,13 +275,11 @@ export type AnyRegularMessageContent =
 			poll: PollMessageOptions
 	  } & Mentionable &
 			Contextable &
-			Editable &
-			ViewOnce)
+			Editable)
 	| ({
 			album: AlbumMessageOptions
 	  } & Contextable &
-			Mentionable &
-			ViewOnce)
+			Mentionable)
 	| ({
 			contacts: {
 				displayName?: string

@@ -66,6 +66,10 @@ const getClientPayload = (config: SocketConfig) => {
 		payload.webInfo = getWebInfo(config)
 	}
 
+	if (config.pushName) {
+		payload.pushName = config.pushName
+	}
+
 	return payload
 }
 
