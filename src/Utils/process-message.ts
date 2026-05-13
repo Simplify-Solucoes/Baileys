@@ -97,13 +97,11 @@ async function storeTcTokensFromHistorySync(
 			continue
 		}
 
-
 		entries[c.storageJid] = {
 			...existingEntry,
 			token: c.token,
 			timestamp: String(c.ts),
 			...(c.senderTs !== undefined ? { senderTimestamp: c.senderTs } : {})
-
 		}
 	}
 
