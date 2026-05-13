@@ -32,6 +32,7 @@ import {
 	decodeMediaRetryNode,
 	decodeMessageNode,
 	decryptMessageNode,
+	decryptSecretEncryptedMessage,
 	delay,
 	derivePairingCodeKey,
 	encodeBigEndian,
@@ -47,6 +48,7 @@ import {
 	MISSING_KEYS_ERROR_TEXT,
 	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
+	normalizeMessageContent,
 	SERVER_ERROR_CODES,
 	toNumber,
 	unixTimestampSeconds,
@@ -1771,7 +1773,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 
-				cleanMessage(msg, authState.creds.me!.id, authState.creds.me!.lid!, logger)
+				cleanMessage(msg, authState.creds.me!.id, authState.creds.me!.lid!)
+				const content = normalizeMessageContent(msg.message)
+				const secretEncryptedMessage = content?.secretEncryptedMessage
+				const targetMessageKey = secretEncryptedMessage?.targetMessageKey as WAMessageKey | undefined
+				if (
+					secretEncryptedMessage?.secretEncType === proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT &&
+					targetMessageKey?.id
+				) {
+					delete msg.messageSecret
+					let originalMessage = messageRetryManager?.getRecentMessageById(targetMessageKey.id)?.message
+					if (!originalMessage) {
+						try {
+							originalMessage = await getMessage(targetMessageKey)
+						} catch (err) {
+							logger.warn({ err, targetMessageKey }, 'failed to load original message for encrypted edit')
+						}
+					}
+
+					const messageSecret = normalizeMessageContent(originalMessage)?.messageContextInfo?.messageSecret
+					if (messageSecret?.length) {
+						msg.messageSecret = messageSecret
+					}
+				}
+
+				await decryptSecretEncryptedMessage(msg, authState.creds.me!.id, authState.creds.me!.lid!, logger)
 
 				await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
 			})

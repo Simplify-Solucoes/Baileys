@@ -120,7 +120,7 @@ async function storeTcTokensFromHistorySync(
 }
 
 /** Cleans a received message to further processing */
-export const cleanMessage = (message: WAMessage, meId: string, meLid: string, logger?: ILogger) => {
+export const cleanMessage = (message: WAMessage, meId: string, meLid: string) => {
 	// ensure remoteJid and participant doesn't have device or agent in it
 	if (isHostedPnUser(message.key.remoteJid!) || isHostedLidUser(message.key.remoteJid!)) {
 		message.key.remoteJid = jidEncode(
@@ -159,83 +159,6 @@ export const cleanMessage = (message: WAMessage, meId: string, meLid: string, lo
 		}
 	}
 
-	if (content?.secretEncryptedMessage) {
-		const secretEncryptedMessage = content.secretEncryptedMessage
-		const targetMessageKey = secretEncryptedMessage.targetMessageKey as WAMessageKey | undefined
-		let editedMessage: proto.IMessage | undefined
-
-		if (
-			secretEncryptedMessage.secretEncType !== proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT ||
-			!targetMessageKey?.id
-		) {
-			logger?.warn(
-				{
-					secretEncType: secretEncryptedMessage.secretEncType,
-					targetMessageKey: secretEncryptedMessage.targetMessageKey
-				},
-				'unsupported secret encrypted message type'
-			)
-		} else if (!secretEncryptedMessage.encPayload?.length || !secretEncryptedMessage.encIv?.length) {
-			logger?.warn({ targetMessageKey }, 'missing encrypted edit payload')
-		} else {
-			const messageSecret = message.messageSecret ?? content.messageContextInfo?.messageSecret
-			const ownSender = message.key.addressingMode === 'lid' && meLid ? meLid : meId
-			const originalSender = targetMessageKey.fromMe
-				? ownSender
-				: targetMessageKey.participant || targetMessageKey.remoteJid
-			const modificationSender = message.key.fromMe ? ownSender : message.key.participant || message.key.remoteJid
-
-			if (!messageSecret?.length) {
-				logger?.warn({ targetMessageKey }, 'missing message secret for encrypted edit')
-			} else if (!originalSender || !modificationSender) {
-				logger?.warn({ targetMessageKey, messageKey: message.key }, 'missing sender for secret encrypted message')
-			} else {
-				try {
-					const decryptKey = generateMsgSecretKey(
-						ENC_SECRET_MESSAGE_EDIT,
-						targetMessageKey.id,
-						originalSender,
-						modificationSender,
-						messageSecret
-					)
-					const decrypted = aesDecryptGCM(
-						secretEncryptedMessage.encPayload,
-						decryptKey,
-						secretEncryptedMessage.encIv,
-						Buffer.alloc(0)
-					)
-					editedMessage = proto.Message.decode(decrypted)
-				} catch (err) {
-					logger?.warn(
-						{
-							err,
-							targetMessageKey,
-							messageKey: message.key,
-							originalSender,
-							modificationSender
-						},
-						'failed to decrypt secret encrypted message'
-					)
-				}
-			}
-
-			if (editedMessage) {
-				if (message.message?.messageContextInfo && !editedMessage.messageContextInfo) {
-					editedMessage.messageContextInfo = message.message.messageContextInfo
-				}
-
-				message.message = {
-					protocolMessage: {
-						key: targetMessageKey,
-						type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT,
-						editedMessage,
-						timestampMs: toNumber(message.messageTimestamp) * 1000
-					}
-				}
-			}
-		}
-	}
-
 	function normaliseKey(msgKey: WAMessageKey) {
 		// if the reaction is from another user
 		// we've to correctly map the key to this user's perspective
@@ -253,6 +176,101 @@ export const cleanMessage = (message: WAMessage, meId: string, meLid: string, lo
 			msgKey.remoteJid = message.key.remoteJid
 			// set participant of the message
 			msgKey.participant = msgKey.participant || message.key.participant
+		}
+	}
+}
+
+export const decryptSecretEncryptedMessage = async (
+	message: WAMessage,
+	meId: string,
+	meLid: string,
+	logger?: ILogger
+) => {
+	const content = normalizeMessageContent(message.message)
+	const secretEncryptedMessage = content?.secretEncryptedMessage
+	if (!secretEncryptedMessage) {
+		return
+	}
+
+	const targetMessageKey = secretEncryptedMessage.targetMessageKey as WAMessageKey | undefined
+	let editedMessage: proto.IMessage | undefined
+
+	if (
+		secretEncryptedMessage.secretEncType !== proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT ||
+		!targetMessageKey?.id
+	) {
+		logger?.warn(
+			{
+				secretEncType: secretEncryptedMessage.secretEncType,
+				targetMessageKey: secretEncryptedMessage.targetMessageKey
+			},
+			'unsupported secret encrypted message type'
+		)
+		return
+	}
+
+	if (!secretEncryptedMessage.encPayload?.length || !secretEncryptedMessage.encIv?.length) {
+		logger?.warn({ targetMessageKey }, 'missing encrypted edit payload')
+		return
+	}
+
+	const messageSecret = message.messageSecret
+	const ownSender = message.key.addressingMode === 'lid' && meLid ? meLid : meId
+	const originalSender = targetMessageKey.fromMe
+		? ownSender
+		: targetMessageKey.participant || targetMessageKey.remoteJid
+	const modificationSender = message.key.fromMe ? ownSender : message.key.participant || message.key.remoteJid
+
+	if (!messageSecret?.length) {
+		logger?.warn({ targetMessageKey }, 'missing original message secret for encrypted edit')
+		return
+	}
+
+	if (!originalSender || !modificationSender) {
+		logger?.warn({ targetMessageKey, messageKey: message.key }, 'missing sender for secret encrypted message')
+		return
+	}
+
+	try {
+		const decryptKey = generateMsgSecretKey(
+			ENC_SECRET_MESSAGE_EDIT,
+			targetMessageKey.id,
+			originalSender,
+			modificationSender,
+			messageSecret
+		)
+		const decrypted = aesDecryptGCM(
+			secretEncryptedMessage.encPayload,
+			decryptKey,
+			secretEncryptedMessage.encIv,
+			Buffer.alloc(0)
+		)
+		editedMessage = proto.Message.decode(decrypted)
+	} catch (err) {
+		logger?.warn(
+			{
+				err,
+				targetMessageKey,
+				messageKey: message.key,
+				originalSender,
+				modificationSender
+			},
+			'failed to decrypt secret encrypted message'
+		)
+	}
+
+	if (editedMessage) {
+		if (message.message?.messageContextInfo && !editedMessage.messageContextInfo) {
+			editedMessage.messageContextInfo = message.message.messageContextInfo
+		}
+
+		message.message = {
+			protocolMessage: {
+				key: targetMessageKey,
+				type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT,
+				editedMessage,
+				timestampMs: toNumber(message.messageTimestamp) * 1000
+			}
 		}
 	}
 }
@@ -396,7 +414,6 @@ const processMessage = async (
 	}: ProcessMessageContext
 ) => {
 	const meId = creds.me!.id
-	const meLid = creds.me!.lid || ''
 	const { accountSettings } = creds
 
 	const chat: Partial<Chat> = { id: jidNormalizedUser(getChatId(message.key)) }
@@ -460,6 +477,7 @@ const processMessage = async (
 
 					await storeTcTokensFromHistorySync(data.chats, signalRepository, keyStore, logger)
 					if (data.lidPnMappings?.length) {
+						//eslint-disable-next-line max-depth
 						for (const mapping of data.lidPnMappings) {
 							ev.emit('lid-mapping.update', mapping)
 						}
