@@ -1771,7 +1771,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 
-				cleanMessage(msg, authState.creds.me!.id, authState.creds.me!.lid!)
+				cleanMessage(msg, authState.creds.me!.id, authState.creds.me!.lid!, logger)
 
 				await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
 			})

@@ -120,7 +120,7 @@ async function storeTcTokensFromHistorySync(
 }
 
 /** Cleans a received message to further processing */
-export const cleanMessage = (message: WAMessage, meId: string, meLid: string) => {
+export const cleanMessage = (message: WAMessage, meId: string, meLid: string, logger?: ILogger) => {
 	// ensure remoteJid and participant doesn't have device or agent in it
 	if (isHostedPnUser(message.key.remoteJid!) || isHostedLidUser(message.key.remoteJid!)) {
 		message.key.remoteJid = jidEncode(
@@ -156,6 +156,83 @@ export const cleanMessage = (message: WAMessage, meId: string, meLid: string) =>
 		if (!message.key.fromMe) {
 			targetMessageKey.remoteJidAlt = message.key.remoteJidAlt
 			targetMessageKey.participantAlt = targetMessageKey.participantAlt || message.key.participantAlt
+		}
+	}
+
+	if (content?.secretEncryptedMessage) {
+		const secretEncryptedMessage = content.secretEncryptedMessage
+		const targetMessageKey = secretEncryptedMessage.targetMessageKey as WAMessageKey | undefined
+		let editedMessage: proto.IMessage | undefined
+
+		if (
+			secretEncryptedMessage.secretEncType !== proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT ||
+			!targetMessageKey?.id
+		) {
+			logger?.warn(
+				{
+					secretEncType: secretEncryptedMessage.secretEncType,
+					targetMessageKey: secretEncryptedMessage.targetMessageKey
+				},
+				'unsupported secret encrypted message type'
+			)
+		} else if (!secretEncryptedMessage.encPayload?.length || !secretEncryptedMessage.encIv?.length) {
+			logger?.warn({ targetMessageKey }, 'missing encrypted edit payload')
+		} else {
+			const messageSecret = message.messageSecret ?? content.messageContextInfo?.messageSecret
+			const ownSender = message.key.addressingMode === 'lid' && meLid ? meLid : meId
+			const originalSender = targetMessageKey.fromMe
+				? ownSender
+				: targetMessageKey.participant || targetMessageKey.remoteJid
+			const modificationSender = message.key.fromMe ? ownSender : message.key.participant || message.key.remoteJid
+
+			if (!messageSecret?.length) {
+				logger?.warn({ targetMessageKey }, 'missing message secret for encrypted edit')
+			} else if (!originalSender || !modificationSender) {
+				logger?.warn({ targetMessageKey, messageKey: message.key }, 'missing sender for secret encrypted message')
+			} else {
+				try {
+					const decryptKey = generateMsgSecretKey(
+						ENC_SECRET_MESSAGE_EDIT,
+						targetMessageKey.id,
+						originalSender,
+						modificationSender,
+						messageSecret
+					)
+					const decrypted = aesDecryptGCM(
+						secretEncryptedMessage.encPayload,
+						decryptKey,
+						secretEncryptedMessage.encIv,
+						Buffer.alloc(0)
+					)
+					editedMessage = proto.Message.decode(decrypted)
+				} catch (err) {
+					logger?.warn(
+						{
+							err,
+							targetMessageKey,
+							messageKey: message.key,
+							originalSender,
+							modificationSender
+						},
+						'failed to decrypt secret encrypted message'
+					)
+				}
+			}
+
+			if (editedMessage) {
+				if (message.message?.messageContextInfo && !editedMessage.messageContextInfo) {
+					editedMessage.messageContextInfo = message.message.messageContextInfo
+				}
+
+				message.message = {
+					protocolMessage: {
+						key: targetMessageKey,
+						type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT,
+						editedMessage,
+						timestampMs: toNumber(message.messageTimestamp) * 1000
+					}
+				}
+			}
 		}
 	}
 
@@ -334,91 +411,13 @@ const processMessage = async (
 		}
 	}
 
-	let content = normalizeMessageContent(message.message)
+	const content = normalizeMessageContent(message.message)
 
 	// unarchive chat if it's a real message, or someone reacted to our message
 	// and we've the unarchive chats setting on
 	if ((isRealMsg || content?.reactionMessage?.key?.fromMe) && accountSettings?.unarchiveChats) {
 		chat.archived = false
 		chat.readOnly = false
-	}
-
-	if (content?.secretEncryptedMessage) {
-		const secretEncryptedMessage = content.secretEncryptedMessage
-		const targetMessageKey = secretEncryptedMessage.targetMessageKey as WAMessageKey | undefined
-		let editedMessage: proto.IMessage | undefined
-
-		if (
-			secretEncryptedMessage.secretEncType !== proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT ||
-			!targetMessageKey?.id
-		) {
-			logger?.warn(
-				{
-					secretEncType: secretEncryptedMessage.secretEncType,
-					targetMessageKey: secretEncryptedMessage.targetMessageKey
-				},
-				'unsupported secret encrypted message type'
-			)
-		} else if (!secretEncryptedMessage.encPayload?.length || !secretEncryptedMessage.encIv?.length) {
-			logger?.warn({ targetMessageKey }, 'missing encrypted edit payload')
-		} else {
-			const messageSecret = message.messageSecret ?? content.messageContextInfo?.messageSecret
-			const ownSender = message.key.addressingMode === 'lid' ? meLid || meId : meId
-			const originalSender = targetMessageKey.fromMe
-				? ownSender
-				: targetMessageKey.participant || targetMessageKey.remoteJid
-			const modificationSender = message.key.fromMe ? ownSender : message.key.participant || message.key.remoteJid
-
-			if (!messageSecret?.length) {
-				logger?.warn({ targetMessageKey }, 'missing message secret for encrypted edit')
-			} else if (!originalSender || !modificationSender) {
-				logger?.warn({ targetMessageKey, messageKey: message.key }, 'missing sender for secret encrypted message')
-			} else {
-				try {
-					const decryptKey = generateMsgSecretKey(
-						ENC_SECRET_MESSAGE_EDIT,
-						targetMessageKey.id,
-						originalSender,
-						modificationSender,
-						messageSecret
-					)
-					const decrypted = aesDecryptGCM(
-						secretEncryptedMessage.encPayload,
-						decryptKey,
-						secretEncryptedMessage.encIv,
-						Buffer.alloc(0)
-					)
-					editedMessage = proto.Message.decode(decrypted)
-				} catch (err) {
-					logger?.warn(
-						{
-							err,
-							targetMessageKey,
-							messageKey: message.key,
-							originalSender,
-							modificationSender
-						},
-						'failed to decrypt secret encrypted message'
-					)
-				}
-			}
-
-			if (editedMessage) {
-				if (message.message?.messageContextInfo && !editedMessage.messageContextInfo) {
-					editedMessage.messageContextInfo = message.message.messageContextInfo
-				}
-
-				message.message = {
-					protocolMessage: {
-						key: targetMessageKey,
-						type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT,
-						editedMessage,
-						timestampMs: toNumber(message.messageTimestamp) * 1000
-					}
-				}
-				content = message.message
-			}
-		}
 	}
 
 	const protocolMsg = content?.protocolMessage
