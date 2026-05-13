@@ -1787,9 +1787,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						: undefined
 
 					msg.messageSecret = normalizeMessageContent(originalMessage)?.messageContextInfo?.messageSecret
-				}
 
-				await decryptSecretEncryptedMessage(msg, authState.creds.me!.id, authState.creds.me!.lid!, logger)
+					await decryptSecretEncryptedMessage(msg, authState.creds.me!.id, authState.creds.me!.lid!, logger)
+				}
 
 				await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
 			})
