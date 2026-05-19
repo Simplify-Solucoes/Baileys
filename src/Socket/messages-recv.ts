@@ -573,33 +573,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const sendMessageAckFireAndForget = (node: BinaryNode, errorCode?: number) => {
-		console.log('[baileys ack] send', {
-			tag: node.tag,
-			attrs: node.attrs,
-			errorCode,
-			wsOpen: ws.isOpen
-		})
-
 		void sendMessageAck(node, errorCode).catch(err => {
 			if (!ws.isOpen || isConnectionClosedError(err)) {
-				console.log('[baileys ack] drop because socket closed', {
-					tag: node.tag,
-					attrs: node.attrs,
-					errorCode,
-					wsOpen: ws.isOpen,
-					err
-				})
 				logger.debug({ recv: node.attrs }, 'dropping ack because socket closed')
 				return
 			}
 
-			console.log('[baileys ack] unexpected send error', {
-				tag: node.tag,
-				attrs: node.attrs,
-				errorCode,
-				wsOpen: ws.isOpen,
-				err
-			})
 			onUnexpectedError(err, 'send ack')
 		})
 	}
