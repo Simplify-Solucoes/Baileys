@@ -61698,6 +61698,18 @@ export const proto = $root.proto = (() => {
                 case 2:
                     m.secretEncType = 2;
                     break;
+                case "MESSAGE_SCHEDULE":
+                case 3:
+                    m.secretEncType = 3;
+                    break;
+                case "POLL_EDIT":
+                case 4:
+                    m.secretEncType = 4;
+                    break;
+                case "POLL_ADD_OPTION":
+                case 5:
+                    m.secretEncType = 5;
+                    break;
                 }
                 return m;
             };
@@ -61745,6 +61757,9 @@ export const proto = $root.proto = (() => {
                 values[valuesById[0] = "UNKNOWN"] = 0;
                 values[valuesById[1] = "EVENT_EDIT"] = 1;
                 values[valuesById[2] = "MESSAGE_EDIT"] = 2;
+                values[valuesById[3] = "MESSAGE_SCHEDULE"] = 3;
+                values[valuesById[4] = "POLL_EDIT"] = 4;
+                values[valuesById[5] = "POLL_ADD_OPTION"] = 5;
                 return values;
             })();
 
