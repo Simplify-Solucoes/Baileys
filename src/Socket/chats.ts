@@ -107,7 +107,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		/** AB prop 10518: gate tctoken on 1:1 messages. Default true (safe: avoids 463). */
 		privacyTokenOn1to1: true,
 		/** AB prop 9666: gate tctoken on profile picture IQs. WA Web default: true. */
-		profilePicPrivacyToken: false,
+		profilePicPrivacyToken: true,
 		/** AB prop 14303: issue tctokens to LID instead of PN. WA Web default: false. */
 		lidTrustedTokenIssueToLid: false
 	}
