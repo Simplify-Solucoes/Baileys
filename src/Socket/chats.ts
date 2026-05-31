@@ -96,6 +96,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
 	const statusContactStore = config.statusContactStore
 
 	let privacySettings: { [_: string]: string } | undefined
@@ -853,7 +854,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			const tcTokenContent = await buildTcTokenFromJid({
 				authState,
 				jid: normalizedJid,
-				getLIDForPN
+				getLIDForPN: getKnownLIDForPN
 			})
 			if (tcTokenContent?.length) {
 				pictureNode.content = tcTokenContent
