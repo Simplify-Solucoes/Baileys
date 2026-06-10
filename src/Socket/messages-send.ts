@@ -1,9 +1,8 @@
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
-import { proto } from '../../WAProto/index.js'
 import { randomBytes } from 'crypto'
+import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
-import { batched } from '../Utils/batched'
 import type {
 	AnyMessageContent,
 	MediaConnInfo,
@@ -20,8 +19,8 @@ import {
 	assertMeId,
 	bindWaitForEvent,
 	decryptMediaRetryData,
-	delay,
 	DEF_MEDIA_HOST,
+	delay,
 	encodeNewsletterMessage,
 	encodeSignedDeviceIdentity,
 	encodeWAMessage,
@@ -39,9 +38,16 @@ import {
 	parseAndInjectE2ESessions,
 	unixTimestampSeconds
 } from '../Utils'
+import { batched } from '../Utils/batched'
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
+import {
+	getStatusSenderKeyMemoryKey,
+	markSenderKeyDistributionSent,
+	planSenderKeyDistribution,
+	type SenderKeyMemoryMap
+} from '../Utils/status-sender-key-memory'
 import {
 	buildMergedTcTokenIndexWrite,
 	computeCsToken,
@@ -56,7 +62,6 @@ import {
 	type BinaryNode,
 	type BinaryNodeAttributes,
 	type FullJid,
-	getBinaryFilteredBizBot,
 	getBinaryFilteredButtons,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
@@ -64,8 +69,8 @@ import {
 	isHostedPnUser,
 	isJidBot,
 	isJidGroup,
-	isJidNewsletter,
 	isJidMetaAI,
+	isJidNewsletter,
 	isLidUser,
 	isPnUser,
 	jidDecode,
@@ -80,6 +85,15 @@ import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
 
 const BATCH_JID_SIZE = 5_000
+
+const shouldIncludeStatusPrivacyMeta = (message: proto.IMessage) => {
+	const content = normalizeMessageContent(message)
+	return (
+		!content?.reactionMessage &&
+		!content?.encReactionMessage &&
+		content?.protocolMessage?.type !== proto.Message.ProtocolMessage.Type.REVOKE
+	)
+}
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -561,7 +575,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		perRecipientNodes: Map<string, BinaryNode[]> = new Map()
 	) => {
 		if (!recipientJids.length) {
-			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false, pkmsgCount: 0 }
+			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false }
 		}
 
 		const patched = await patchMessageBeforeSending(message, recipientJids)
@@ -570,7 +584,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			: recipientJids.map(jid => ({ recipientJid: jid, message: patched }))
 
 		let shouldIncludeDeviceIdentity = false
-		let pkmsgCount = 0
 		const meId = authState.creds.me!.id
 		const meLid = authState.creds.me?.lid
 		const meLidUser = meLid ? jidDecode(meLid)?.user : null
@@ -604,7 +617,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 						if (type === 'pkmsg') {
 							shouldIncludeDeviceIdentity = true
-							pkmsgCount += 1
 						}
 
 						const content: BinaryNode[] = [
@@ -640,31 +652,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			throw new Boom('All encryptions failed', { statusCode: 500 })
 		}
 
-		return { nodes, shouldIncludeDeviceIdentity, pkmsgCount }
-	}
-
-	const getEncryptedContentLength = (nodes: BinaryNode[]): number => {
-		let length = 0
-		for (const node of nodes) {
-			if (node.content instanceof Uint8Array) {
-				length += node.content.length
-				continue
-			}
-
-			if (Array.isArray(node.content)) {
-				length += getEncryptedContentLength(node.content)
-			}
-		}
-
-		return length
-	}
-
-	const getTraffAnonPadLength = (payloadLength: number): number => {
-		if (payloadLength <= 0) {
-			return 0
-		}
-
-		return Math.min(Math.floor((payloadLength + 140) * 0.02), 100_000)
+		return { nodes, shouldIncludeDeviceIdentity }
 	}
 
 	const buildStatusPrivacyTokenNodes = async (recipientJids: string[]) => {
@@ -777,7 +765,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: DeviceWithJid[] = []
 		let reportingMessage: proto.IMessage | undefined
-		let statusPkmsgCount = 0
 
 		const meMsg: proto.IMessage = {
 			deviceSentMessage: {
@@ -859,28 +846,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			if (isGroupOrStatus && !isRetryResend) {
-				const [groupData, senderKeyMap] = await Promise.all([
-					(async () => {
-						let groupData = useCachedGroupMetadata && cachedGroupMetadata ? await cachedGroupMetadata(jid) : undefined // todo: should we rely on the cache specially if the cache is outdated and the metadata has new fields?
-						if (groupData && Array.isArray(groupData?.participants)) {
-							logger.trace({ jid, participants: groupData.participants.length }, 'using cached group metadata')
-						} else if (!isStatus) {
-							groupData = await groupMetadata(jid) // TODO: start storing group participant list + addr mode in Signal & stop relying on this
-						}
-
-						return groupData
-					})(),
-					(async () => {
-						if (!participant && !isStatus) {
-							// what if sender memory is less accurate than the cached metadata
-							// on participant change in group, we should do sender memory manipulation
-							const result = await authState.keys.get('sender-key-memory', [jid]) // TODO: check out what if the sender key memory doesn't include the LID stuff now?
-							return result[jid] || {}
-						}
-
-						return {}
-					})()
-				])
+				let groupData = useCachedGroupMetadata && cachedGroupMetadata ? await cachedGroupMetadata(jid) : undefined // todo: should we rely on the cache specially if the cache is outdated and the metadata has new fields?
+				if (groupData && Array.isArray(groupData?.participants)) {
+					logger.trace({ jid, participants: groupData.participants.length }, 'using cached group metadata')
+				} else if (!isStatus) {
+					groupData = await groupMetadata(jid) // TODO: start storing group participant list + addr mode in Signal & stop relying on this
+				}
 
 				const participantsList = groupData ? groupData.participants.map(p => p.id) : []
 
@@ -936,6 +907,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				reportingMessage = patched
 				const groupAddressingMode = additionalAttributes?.['addressing_mode'] || groupData?.addressingMode || 'lid'
 				const groupSenderIdentity = groupAddressingMode === 'lid' && meLid ? meLid : meId
+				const senderKeyMemoryKey = isStatus
+					? getStatusSenderKeyMemoryKey(destinationJid, groupSenderIdentity)
+					: destinationJid
+				let senderKeyMap: SenderKeyMemoryMap = {}
+				if (
+					!participant &&
+					(await signalRepository.hasSenderKey({ group: destinationJid, meId: groupSenderIdentity }))
+				) {
+					const result = await authState.keys.get('sender-key-memory', [senderKeyMemoryKey])
+					senderKeyMap = result[senderKeyMemoryKey] || {}
+				}
 
 				const { ciphertext, senderKeyDistributionMessage } = await signalRepository.encryptGroupMessage({
 					group: destinationJid,
@@ -943,21 +925,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					meId: groupSenderIdentity
 				})
 
-				const senderKeyRecipients: string[] = []
-				for (const device of devices) {
-					const deviceJid = device.jid
-					const hasKey = !!senderKeyMap[deviceJid]
-					if (
-						(!hasKey || !!participant) &&
-						!isHostedLidUser(deviceJid) &&
-						!isHostedPnUser(deviceJid) &&
-						device.device !== 99
-					) {
-						//todo: revamp all this logic
-						// the goal is to follow with what I said above for each group, and instead of a true false map of ids, we can set an array full of those the app has already sent pkmsgs
-						senderKeyRecipients.push(deviceJid)
-						senderKeyMap[deviceJid] = true
-					}
+				const senderKeyPlan = planSenderKeyDistribution({
+					devices,
+					includeReusedUserParticipantNodes: isStatus,
+					resetOnUnmatchedMemory: isStatus,
+					senderKeyMap
+				})
+				const senderKeyRecipients = senderKeyPlan.senderKeyRecipients
+				let nextSenderKeyMap = senderKeyPlan.nextSenderKeyMap
+				if (senderKeyPlan.shouldResetSenderKeyMemory) {
+					logger.debug(
+						{ jid: destinationJid, memoryKey: senderKeyMemoryKey },
+						'resetting stale status sender-key memory'
+					)
 				}
 
 				if (senderKeyRecipients.length) {
@@ -984,12 +964,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						statusPrivacyTokenNodes
 					)
 					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
-					if (isStatus) {
-						statusPkmsgCount += result.pkmsgCount
-					}
 
+					nextSenderKeyMap = markSenderKeyDistributionSent(nextSenderKeyMap, result.nodes)
 					participants.push(...result.nodes)
 				}
+
+				participants.push(...senderKeyPlan.participantNodes)
 
 				binaryNodeContent.push({
 					tag: 'enc',
@@ -997,7 +977,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					content: ciphertext
 				})
 
-				await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
+				await authState.keys.set({ 'sender-key-memory': { [senderKeyMemoryKey]: nextSenderKeyMap } })
 			} else {
 				// ADDRESSING CONSISTENCY: Match own identity to conversation context
 				// TODO: investigate if this is true
@@ -1217,23 +1197,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			if (shouldIncludeDeviceIdentity) {
-				if (isStatus && statusPkmsgCount > 0) {
-					;(stanza.content as BinaryNode[]).push({
-						tag: 'padding',
-						attrs: {},
-						content: randomBytes(statusPkmsgCount * 1571)
-					})
-
-					const taPadLength = getTraffAnonPadLength(getEncryptedContentLength(binaryNodeContent))
-					if (taPadLength > 0) {
-						;(stanza.content as BinaryNode[]).push({
-							tag: 'ta_pad',
-							attrs: {},
-							content: Buffer.alloc(taPadLength)
-						})
-					}
-				}
-
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'device-identity',
 					attrs: {},
@@ -1242,12 +1205,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				logger.debug({ jid }, 'adding device identity')
 			}
-			if (isStatus && statusSetting) {
+
+			if (isStatus && statusSetting && shouldIncludeStatusPrivacyMeta(message)) {
 				binaryNodeContent.push({
 					tag: 'meta',
 					attrs: { status_setting: statusSetting }
 				})
 			}
+
 			if (
 				!isNewsletter &&
 				!isRetryResend &&
@@ -1649,7 +1614,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const ptt = isAudio ? (typeof (content as any).ptt === 'boolean' ? (content as any).ptt : true) : undefined
 
 		let msg: any
-		let mediaHandle: string | undefined
 		try {
 			msg = await generateWAMessage(STORIES_JID, messageContent, {
 				logger,
@@ -1663,7 +1627,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}),
 				upload: async (encFilePath: string, opts: any) => {
 					const up = await waUploadToServer(encFilePath, { ...opts })
-					mediaHandle = up.mediaUrl
 					return up
 				},
 				mediaCache: config.mediaCache,
@@ -1761,13 +1724,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					expectedVideoCount: medias.filter(media => 'video' in media).length,
 					...options
 				}
-			} as any,
+			},
 			{ userJid, ...options }
 		)
 
 		await relayMessage(jid, album.message!, { messageId: album.key.id! })
 
-		let mediaHandle: string | undefined
 		let msg: any
 
 		for (const i in medias) {
@@ -1785,7 +1747,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						userJid,
 						upload: async (encFilePath: string, opts: any) => {
 							const up = await waUploadToServer(encFilePath, { ...opts, newsletter: isJidNewsletter(jid) })
-							mediaHandle = up.mediaUrl // Fixed: use mediaUrl instead of handle
 							return up
 						},
 						...options
@@ -1802,7 +1763,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						userJid,
 						upload: async (encFilePath: string, opts: any) => {
 							const up = await waUploadToServer(encFilePath, { ...opts, newsletter: isJidNewsletter(jid) })
-							mediaHandle = up.mediaUrl // Fixed: use mediaUrl instead of handle
 							return up
 						},
 						...options
@@ -2006,14 +1966,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						attrs: {
 							polltype: 'creation'
 						}
-					} as BinaryNode)
+					})
 				} else if (isEventMsg) {
 					additionalNodes.push({
 						tag: 'meta',
 						attrs: {
 							event_type: 'creation'
 						}
-					} as BinaryNode)
+					})
 				}
 
 				await relayMessage(jid, fullMsg.message!, {

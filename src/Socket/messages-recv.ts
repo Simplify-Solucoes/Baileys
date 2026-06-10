@@ -58,6 +58,7 @@ import {
 import { makeMutex } from '../Utils/make-mutex'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import { buildAckStanza } from '../Utils/stanza-ack'
+import { getStatusSenderKeyMemoryKey } from '../Utils/status-sender-key-memory'
 import {
 	buildMergedTcTokenIndexWrite,
 	isTcTokenExpired,
@@ -1377,6 +1378,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const retryCount = +retryNode.attrs.count! || 1
 		const msgId = ids[0]
 
+		const senderKeyMemoryPatch: Record<string, null> = {}
+		if (isJidStatusBroadcast(remoteJid)) {
+			const statusSenderJids = new Set(
+				[authState.creds.me?.lid, authState.creds.me?.id].filter((jid): jid is string => !!jid)
+			)
+			for (const senderJid of statusSenderJids) {
+				senderKeyMemoryPatch[getStatusSenderKeyMemoryKey(remoteJid, senderJid)] = null
+			}
+
+			// Clear the legacy unscoped status key too, for sessions created before status memory was sender-scoped.
+			senderKeyMemoryPatch[remoteJid] = null
+		} else if (isJidGroup(remoteJid)) {
+			senderKeyMemoryPatch[remoteJid] = null
+		}
+
+		if (Object.keys(senderKeyMemoryPatch).length) {
+			await authState.keys.set({ 'sender-key-memory': senderKeyMemoryPatch })
+		}
+
 		// Try to get messages from cache first, then fallback to getMessage
 		const msgs: (proto.IMessage | undefined)[] = []
 		for (const id of ids) {
@@ -1480,10 +1500,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		if (!injectedFromBundle) {
 			await assertSessions([participant], true)
-		}
-
-		if (isJidGroup(remoteJid)) {
-			await authState.keys.set({ 'sender-key-memory': { [remoteJid]: null } })
 		}
 
 		logger.debug(
