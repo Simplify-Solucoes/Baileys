@@ -1532,62 +1532,127 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const handleReceipt = async (node: BinaryNode) => {
 		const { attrs, content } = node
-		const isLid = attrs.from!.includes('lid')
-		const isNodeFromMe = areJidsSameUser(
-			attrs.participant || attrs.from,
-			isLid ? authState.creds.me?.lid : authState.creds.me?.id
-		)
-		const remoteJid = !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
-		const fromMe = !attrs.recipient || ((attrs.type === 'retry' || attrs.type === 'sender') && isNodeFromMe)
+		const receiptActor = attrs.participant || attrs.from
+		const isNodeFromMe =
+			areJidsSameUser(receiptActor, authState.creds.me?.id) || areJidsSameUser(receiptActor, authState.creds.me?.lid)
+		const isStatusReceipt = isJidStatusBroadcast(attrs.from!)
+		const remoteJid = isStatusReceipt || !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
+		const fromMe = isStatusReceipt
+			? !isNodeFromMe
+			: !attrs.recipient || ((attrs.type === 'retry' || attrs.type === 'sender') && isNodeFromMe)
+		const statusKeyParticipant = attrs.recipient
+			? jidNormalizedUser(attrs.recipient)
+			: authState.creds.me?.lid || authState.creds.me?.id
 
 		const key: proto.IMessageKey = {
 			remoteJid,
 			id: '',
 			fromMe,
-			participant: attrs.participant
+			participant: isStatusReceipt ? statusKeyParticipant : attrs.participant
 		}
 
-		const ids = [attrs.id!]
+		const isViewReceipt = attrs.type === 'view'
+		const ids: string[] = []
 		if (Array.isArray(content)) {
-			const items = getBinaryNodeChildren(content[0], 'item')
-			ids.push(...items.map(i => i.attrs.id!))
+			const items = getBinaryNodeChildren(getBinaryNodeChild(node, 'list'), 'item')
+			const itemIdAttr = isViewReceipt ? 'server_id' : 'id'
+			ids.push(...items.map(item => item.attrs[itemIdAttr]).filter((id): id is string => !!id))
+		}
+
+		if (!isViewReceipt && attrs.id) {
+			ids.push(attrs.id)
 		}
 
 		try {
 			await Promise.all([
 				receiptMutex.mutex(async () => {
-					const status = getStatusFromReceiptType(attrs.type)
-					if (
-						typeof status !== 'undefined' &&
-						// basically, we only want to know when a message from us has been delivered to/read by the other person
-						// or another device of ours has read some messages
-						(status >= proto.WebMessageInfo.Status.SERVER_ACK || !isNodeFromMe)
-					) {
-						if (isJidGroup(remoteJid) || isJidStatusBroadcast(remoteJid!)) {
-							if (attrs.participant) {
-								const updateKey: keyof MessageUserReceipt =
-									status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'receiptTimestamp' : 'readTimestamp'
+					const storeParticipantMapping = async (
+						participantJid: string | undefined,
+						participantPnJid: string | undefined
+					) => {
+						if (!participantJid || !participantPnJid) return
+
+						const participant = jidNormalizedUser(participantJid)
+						const participantPn = jidNormalizedUser(participantPnJid)
+						if (isLidUser(participant) && isPnUser(participantPn)) {
+							await signalRepository.lidMapping.storeLIDPNMappings([{ lid: participant, pn: participantPn }])
+						}
+					}
+
+					const emitReceiptUpdate = async (
+						receiptIds: string[],
+						receiptType: string | undefined,
+						participant: string | undefined,
+						participantPn: string | undefined,
+						timestamp: string | undefined
+					) => {
+						const participantIsMe = participant
+							? areJidsSameUser(participant, authState.creds.me?.id) ||
+								areJidsSameUser(participant, authState.creds.me?.lid)
+							: isNodeFromMe
+						if (isStatusReceipt && !participantIsMe && receiptType !== 'read') {
+							return
+						}
+
+						await storeParticipantMapping(participant, participantPn)
+
+						const status = getStatusFromReceiptType(receiptType)
+						if (
+							typeof status !== 'undefined' &&
+							// basically, we only want to know when a message from us has been delivered to/read by the other person
+							// or another device of ours has read some messages
+							(status >= proto.WebMessageInfo.Status.SERVER_ACK || !participantIsMe)
+						) {
+							if (isJidGroup(remoteJid) || isJidStatusBroadcast(remoteJid!)) {
+								if (participant) {
+									const receiptKey = isStatusReceipt
+										? { ...key, fromMe: !participantIsMe, participant: statusKeyParticipant }
+										: { ...key, participant }
+									const updateKey: keyof MessageUserReceipt =
+										status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'receiptTimestamp' : 'readTimestamp'
+									ev.emit(
+										'message-receipt.update',
+										receiptIds.map(id => ({
+											key: { ...receiptKey, id },
+											receipt: {
+												userJid: jidNormalizedUser(participant),
+												[updateKey]: +(timestamp ?? attrs.t ?? 0)
+											}
+										}))
+									)
+								}
+							} else {
 								ev.emit(
-									'message-receipt.update',
-									ids.map(id => ({
+									'messages.update',
+									receiptIds.map(id => ({
 										key: { ...key, id },
-										receipt: {
-											userJid: jidNormalizedUser(attrs.participant),
-											[updateKey]: +attrs.t!
-										}
+										update: { status, messageTimestamp: toNumber(+(timestamp ?? attrs.t ?? 0)) }
 									}))
 								)
 							}
-						} else {
-							ev.emit(
-								'messages.update',
-								ids.map(id => ({
-									key: { ...key, id },
-									update: { status, messageTimestamp: toNumber(+(attrs.t ?? 0)) }
-								}))
-							)
 						}
 					}
+
+					const participants = getBinaryNodeChild(node, 'participants')
+					if (participants && (isJidGroup(remoteJid) || isStatusReceipt)) {
+						const aggregateId = participants.attrs.message_id || participants.attrs.key || attrs.id
+						if (aggregateId) {
+							const aggregateByMessage = !!participants.attrs.message_id
+							for (const user of getBinaryNodeChildren(participants, 'user')) {
+								await emitReceiptUpdate(
+									[aggregateId],
+									aggregateByMessage ? user.attrs.type : attrs.type,
+									user.attrs.jid,
+									user.attrs.participant_pn,
+									user.attrs.t
+								)
+							}
+						}
+
+						return
+					}
+
+					await emitReceiptUpdate(ids, attrs.type, attrs.participant, attrs.participant_pn, attrs.t)
 
 					if (attrs.type === 'retry') {
 						// correctly set who is asking for the retry

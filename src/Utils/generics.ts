@@ -335,6 +335,7 @@ export const generateMdTagPrefix = () => {
 }
 
 const STATUS_MAP: { [_: string]: proto.WebMessageInfo.Status } = {
+	delivery: proto.WebMessageInfo.Status.DELIVERY_ACK,
 	sender: proto.WebMessageInfo.Status.SERVER_ACK,
 	played: proto.WebMessageInfo.Status.PLAYED,
 	read: proto.WebMessageInfo.Status.READ,
