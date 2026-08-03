@@ -96,6 +96,10 @@ const PLATFORM_OVERRIDES: Record<string, proto.DeviceProps.PlatformType> = {
 
 const getPlatformType = (platform: string): proto.DeviceProps.PlatformType => {
 	const platformType = platform.toUpperCase()
+	if (platformType === 'ANDROID') {
+		return proto.DeviceProps.PlatformType.ANDROID_PHONE
+	}
+
 	return (
 		PLATFORM_OVERRIDES[platformType] ??
 		proto.DeviceProps.PlatformType[platformType as keyof typeof proto.DeviceProps.PlatformType] ??
