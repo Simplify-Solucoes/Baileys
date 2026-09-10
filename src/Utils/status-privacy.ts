@@ -35,8 +35,7 @@ const getPreferredStatusJid = (contact: Contact) => {
 	}
 }
 
-const getContactVariants = (contact: Contact) =>
-	uniqueJids([contact.id, contact.lid, contact.phoneNumber])
+const getContactVariants = (contact: Contact) => uniqueJids([contact.id, contact.lid, contact.phoneNumber])
 
 export const getStatusSettingMeta = (type: StatusPrivacySetting['type']): StatusSettingMeta => {
 	switch (type) {
@@ -50,13 +49,7 @@ export const getStatusSettingMeta = (type: StatusPrivacySetting['type']): Status
 	}
 }
 
-export const getStatusRecipients = ({
-	contacts,
-	privacy
-}: {
-	contacts: Contact[]
-	privacy: StatusPrivacySetting
-}) => {
+export const getStatusRecipients = ({ contacts, privacy }: { contacts: Contact[]; privacy: StatusPrivacySetting }) => {
 	if (privacy.type === 'whitelist') {
 		return uniqueJids(privacy.list)
 	}

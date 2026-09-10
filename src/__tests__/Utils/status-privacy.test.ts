@@ -27,11 +27,7 @@ describe('getStatusRecipients', () => {
 			privacy: DEFAULT_STATUS_PRIVACY
 		})
 
-		expect(recipients).toEqual([
-			'5511999999999@s.whatsapp.net',
-			'5511777777777@s.whatsapp.net',
-			'123456789@lid'
-		])
+		expect(recipients).toEqual(['5511999999999@s.whatsapp.net', '5511777777777@s.whatsapp.net', '123456789@lid'])
 	})
 
 	it('keeps contacts regardless of extra metadata flags', () => {
