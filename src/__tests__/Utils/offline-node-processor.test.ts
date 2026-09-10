@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals'
-import { makeOfflineNodeProcessor, type MessageType } from '../../Utils/offline-node-processor'
+import { isOfflineNode, makeOfflineNodeProcessor, type MessageType } from '../../Utils/offline-node-processor'
 import { type BinaryNode } from '../../WABinary'
 
 function makeNode(id: string, tag = 'message'): BinaryNode {
@@ -29,6 +29,14 @@ describe('makeOfflineNodeProcessor', () => {
 		mockOnUnexpectedError = jest.fn()
 		isWsOpen = true
 		yieldCalls = 0
+	})
+
+	describe('offline classification', () => {
+		it('treats only the protocol value "1" as offline', () => {
+			expect(isOfflineNode(makeNode('offline'))).toBe(true)
+			expect(isOfflineNode({ ...makeNode('online'), attrs: { id: 'online', offline: '0' } })).toBe(false)
+			expect(isOfflineNode({ ...makeNode('missing'), attrs: { id: 'missing' } })).toBe(false)
+		})
 	})
 
 	describe('basic processing', () => {
@@ -169,6 +177,44 @@ describe('makeOfflineNodeProcessor', () => {
 				expect.objectContaining({ message: expect.stringContaining('unknown offline node type') }),
 				'processing offline node'
 			)
+		})
+	})
+
+	describe('stalled handlers', () => {
+		it('reports a timeout and stops the current queue generation', async () => {
+			jest.useFakeTimers()
+			try {
+				const processed: string[] = []
+				const stalledTask = new Promise<void>(() => undefined)
+				const handler = jest.fn<(node: BinaryNode) => Promise<void>>().mockImplementation(async node => {
+					processed.push(node.attrs.id!)
+					if (node.attrs.id === 'msg-1') {
+						await stalledTask
+					}
+				})
+				const onItemTimeout = jest.fn()
+				const processor = makeOfflineNodeProcessor(new Map([['message', handler]]), {
+					isWsOpen: () => true,
+					onUnexpectedError: mockOnUnexpectedError,
+					yieldToEventLoop: async () => undefined,
+					itemTimeoutMs: 100,
+					onItemTimeout
+				})
+
+				processor.enqueue('message', makeNode('msg-1'))
+				processor.enqueue('message', makeNode('msg-2'))
+				await jest.advanceTimersByTimeAsync(100)
+
+				expect(processed).toEqual(['msg-1'])
+				expect(onItemTimeout).toHaveBeenCalledWith(
+					expect.objectContaining({ message: 'offline message node processing timed out' }),
+					'message',
+					expect.objectContaining({ attrs: expect.objectContaining({ id: 'msg-1' }) })
+				)
+				expect(mockOnUnexpectedError).not.toHaveBeenCalled()
+			} finally {
+				jest.useRealTimers()
+			}
 		})
 	})
 

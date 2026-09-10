@@ -1,6 +1,9 @@
 import type { BinaryNode } from '../WABinary'
+import { processNodeWithTimeout } from './process-node-with-timeout'
 
 export type MessageType = 'message' | 'call' | 'receipt' | 'notification'
+
+export const isOfflineNode = (node: BinaryNode): boolean => node.attrs.offline === '1'
 
 type OfflineNode = {
 	type: MessageType
@@ -11,6 +14,8 @@ export type OfflineNodeProcessorDeps = {
 	isWsOpen: () => boolean
 	onUnexpectedError: (error: Error, msg: string) => void
 	yieldToEventLoop: () => Promise<void>
+	itemTimeoutMs?: number
+	onItemTimeout?: (error: Error, type: MessageType, node: BinaryNode) => void
 }
 
 /**
@@ -49,7 +54,14 @@ export function makeOfflineNodeProcessor(
 					continue
 				}
 
-				await nodeProcessor(node).catch(err => deps.onUnexpectedError(err, `processing offline ${type}`))
+				const timedOut = await processNodeWithTimeout(nodeProcessor(node), `offline ${type} node`, deps.itemTimeoutMs, {
+					onUnexpectedError: error => deps.onUnexpectedError(error, `processing offline ${type}`),
+					onTimeout: error => deps.onItemTimeout?.(error, type, node)
+				})
+				if (timedOut) {
+					break
+				}
+
 				processedInBatch++
 
 				// Yield to event loop after processing a batch

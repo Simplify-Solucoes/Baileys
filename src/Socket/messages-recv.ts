@@ -57,7 +57,9 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
-import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
+import { isOfflineNode, makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
+import { processNodeWithTimeout } from '../Utils/process-node-with-timeout'
+import { resolveSignalSessionTarget } from '../Utils/signal-session-target'
 import { buildAckStanza } from '../Utils/stanza-ack'
 import { getStatusSenderKeyMemoryKey } from '../Utils/status-sender-key-memory'
 import {
@@ -130,6 +132,53 @@ function isConnectionClosedError(error: unknown) {
 		err.code === 'EPIPE' ||
 		err.code === 'ECONNABORTED'
 	)
+}
+
+const INBOUND_NODE_PROCESSING_TIMEOUT_MS = 60_000
+
+const INBOUND_DIAGNOSTIC_EVENTS = {
+	onlineTimeout: 'whatsapp_session_inbound_online_node_timeout',
+	offlineTimeout: 'whatsapp_session_inbound_offline_node_timeout',
+	messageError: 'whatsapp_session_inbound_message_error'
+} as const
+
+const SIGNAL_SESSION_DIAGNOSTIC_EVENTS = {
+	recreated: 'whatsapp_signal_session_recreated',
+	recreationFailed: 'whatsapp_signal_session_recreation_failed',
+	clearedRegistrationMismatch: 'whatsapp_signal_session_cleared_registration_mismatch',
+	clearedBaseKeyCollision: 'whatsapp_signal_session_cleared_base_key_collision'
+} as const
+
+const INBOUND_PROCESSING_STAGES = {
+	received: 'message-received',
+	lidMapping: 'lid-mapping',
+	mutexWait: 'message-mutex-wait',
+	signalDecrypt: 'signal-decrypt',
+	postDecrypt: 'post-decrypt',
+	eventUpsert: 'event-upsert',
+	offlineQueue: 'offline-queue-wait',
+	dispatch: 'node-dispatch',
+	completed: 'completed'
+} as const
+
+type InboundProcessingStage = (typeof INBOUND_PROCESSING_STAGES)[keyof typeof INBOUND_PROCESSING_STAGES]
+
+type InboundNodeProgress = {
+	inboundStage: InboundProcessingStage
+	inboundStageStartedAt: number
+}
+
+const inboundNodeStages = new WeakMap<BinaryNode, InboundNodeProgress>()
+
+const setInboundNodeStage = (node: BinaryNode, inboundStage: InboundProcessingStage): void => {
+	inboundNodeStages.set(node, { inboundStage, inboundStageStartedAt: Date.now() })
+}
+
+const getInboundNodeStage = (node: BinaryNode) => {
+	const progress = inboundNodeStages.get(node)
+	return progress
+		? { ...progress, inboundStageElapsedMs: Date.now() - progress.inboundStageStartedAt }
+		: { inboundStage: 'unknown', inboundStageStartedAt: null, inboundStageElapsedMs: null }
 }
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
@@ -672,20 +721,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (enableAutoSessionRecreation && messageRetryManager && retryCount > 1) {
 			try {
 				// Check if we have a session with this JID
-				const sessionId = signalRepository.jidToSignalProtocolAddress(fromJid)
+				const { sessionId, usedLidMapping } = await resolveSignalSessionTarget(signalRepository, fromJid)
 				const hasSession = await signalRepository.validateSession(fromJid)
 				const result = messageRetryManager.shouldRecreateSession(fromJid, hasSession.exists)
 				shouldRecreateSession = result.recreate
 				recreateReason = result.reason
 
 				if (shouldRecreateSession) {
-					logger.debug({ fromJid, retryCount, reason: recreateReason }, 'recreating session for retry')
+					logger.warn(
+						{
+							event: SIGNAL_SESSION_DIAGNOSTIC_EVENTS.recreated,
+							retryCount,
+							reason: recreateReason,
+							usedLidMapping
+						},
+						'recreating Signal session for retry'
+					)
 					// Delete existing session to force recreation
 					await authState.keys.set({ session: { [sessionId]: null } })
 					forceIncludeKeys = true
 				}
 			} catch (error) {
-				logger.warn({ error, fromJid }, 'failed to check session recreation')
+				logger.warn(
+					{ event: SIGNAL_SESSION_DIAGNOSTIC_EVENTS.recreationFailed, err: error },
+					'failed to check Signal session recreation'
+				)
 			}
 		}
 
@@ -1410,6 +1470,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const participant = key.participant || remoteJid
 
 		const retryCount = +retryNode.attrs.count! || 1
+		const retryErrorCode = messageRetryManager?.parseRetryErrorCode(retryNode.attrs.error)
+		const shouldEvaluateSessionRecreation = retryCount > 1 || Boolean(messageRetryManager?.isMacError(retryErrorCode))
 		const msgId = ids[0]
 
 		const senderKeyMemoryPatch: Record<string, null> = {}
@@ -1468,7 +1530,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// prevents the first message decryption failure
 		const sendToAll = !jidDecode(participant)?.device
 
-		const sessionId = signalRepository.jidToSignalProtocolAddress(participant)
+		const { sessionId, usedLidMapping } = await resolveSignalSessionTarget(signalRepository, participant)
 		let injectedFromBundle = false
 
 		const bundle = extractE2ESessionFromRetryReceipt(receiptNode)
@@ -1487,9 +1549,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (typeof receivedRegId === 'number' && Number.isInteger(receivedRegId)) {
 				const info = await signalRepository.getSessionInfo(participant)
 				if (info && info.registrationId !== 0 && info.registrationId !== receivedRegId) {
-					logger.info(
-						{ participant, stored: info.registrationId, received: receivedRegId },
-						'reg id mismatch on retry without bundle, deleting session'
+					logger.warn(
+						{ event: SIGNAL_SESSION_DIAGNOSTIC_EVENTS.clearedRegistrationMismatch, usedLidMapping },
+						'registration mismatch on retry; clearing Signal session'
 					)
 					await authState.keys.set({ session: { [sessionId]: null } })
 				}
@@ -1504,7 +1566,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					messageRetryManager.saveBaseKey(sessionId, msgId, info.baseKey)
 				} else if (retryCount > BASE_KEY_CHECK_RETRY) {
 					if (messageRetryManager.hasSameBaseKey(sessionId, msgId, info.baseKey)) {
-						logger.warn({ participant, retryCount }, 'base key collision on retry, forcing fresh session')
+						logger.warn(
+							{
+								event: SIGNAL_SESSION_DIAGNOSTIC_EVENTS.clearedBaseKeyCollision,
+								retryCount,
+								usedLidMapping
+							},
+							'base key collision on retry; clearing Signal session'
+						)
 						await authState.keys.set({ session: { [sessionId]: null } })
 					}
 
@@ -1516,19 +1585,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		let shouldRecreateSession = false
 		let recreateReason = ''
 
-		if (enableAutoSessionRecreation && messageRetryManager && retryCount > 1 && !injectedFromBundle) {
+		if (enableAutoSessionRecreation && messageRetryManager && shouldEvaluateSessionRecreation && !injectedFromBundle) {
 			try {
 				const hasSession = await signalRepository.validateSession(participant)
-				const result = messageRetryManager.shouldRecreateSession(participant, hasSession.exists)
+				const result = messageRetryManager.shouldRecreateSession(participant, hasSession.exists, retryErrorCode)
 				shouldRecreateSession = result.recreate
 				recreateReason = result.reason
 
 				if (shouldRecreateSession) {
-					logger.debug({ participant, retryCount, reason: recreateReason }, 'recreating session for outgoing retry')
+					logger.warn(
+						{
+							event: SIGNAL_SESSION_DIAGNOSTIC_EVENTS.recreated,
+							retryCount,
+							retryErrorCode,
+							reason: recreateReason,
+							usedLidMapping
+						},
+						'recreating Signal session for outgoing retry'
+					)
 					await authState.keys.set({ session: { [sessionId]: null } })
 				}
 			} catch (error) {
-				logger.warn({ error, participant }, 'failed to check session recreation for outgoing retry')
+				logger.warn(
+					{ event: SIGNAL_SESSION_DIAGNOSTIC_EVENTS.recreationFailed, err: error },
+					'failed to check Signal session recreation for outgoing retry'
+				)
 			}
 		}
 
@@ -1752,6 +1833,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleMessage = async (node: BinaryNode) => {
+		setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.received)
 		const encNode = getBinaryNodeChild(node, 'enc')
 		// TODO: temporary fix for crashes and issues resulting of failed msmsg decryption
 		if (encNode?.attrs.type === 'msmsg') {
@@ -1773,6 +1855,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
 			// store new mappings we didn't have before
 			if (!!alt) {
+				setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.lidMapping)
 				const altServer = jidDecode(alt)?.server
 				const primaryJid = msg.key.participant || msg.key.remoteJid!
 				if (altServer === 'lid') {
@@ -1786,8 +1869,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 			}
 
+			setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.mutexWait)
 			await messageMutex.mutex(async () => {
+				setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.signalDecrypt)
 				await decrypt()
+				setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.postDecrypt)
 
 				if (msg.key?.remoteJid && msg.key?.id && msg.message && messageRetryManager) {
 					messageRetryManager.addRecentMessage(msg.key.remoteJid, msg.key.id, msg.message)
@@ -1971,10 +2057,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 
-				await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
+				setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.eventUpsert)
+				await upsertMessage(msg, isOfflineNode(node) ? 'append' : 'notify')
+				setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.completed)
 			})
 		} catch (error) {
-			logger.error({ error, node: binaryNodeToString(node) }, 'error in handling message')
+			logger.error(
+				{
+					event: INBOUND_DIAGNOSTIC_EVENTS.messageError,
+					err: error,
+					nodeType: node.tag,
+					offline: isOfflineNode(node),
+					...getInboundNodeStage(node)
+				},
+				'error in handling inbound message'
+			)
 			if (!acked) {
 				sendMessageAckFireAndForget(node, NACK_REASONS.UnhandledError)
 			}
@@ -2001,7 +2098,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				callerPn: infoChild.attrs['caller_pn'],
 				id: callId,
 				date: new Date(+attrs.t! * 1000),
-				offline: !!attrs.offline,
+				offline: attrs.offline === '1',
 				status
 			}
 
@@ -2155,7 +2252,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		{
 			isWsOpen: () => ws.isOpen,
 			onUnexpectedError,
-			yieldToEventLoop: () => new Promise(resolve => setImmediate(resolve))
+			yieldToEventLoop: () => new Promise(resolve => setImmediate(resolve)),
+			itemTimeoutMs: INBOUND_NODE_PROCESSING_TIMEOUT_MS,
+			onItemTimeout: (error, type, node) => {
+				logger.error(
+					{
+						event: INBOUND_DIAGNOSTIC_EVENTS.offlineTimeout,
+						err: error,
+						nodeType: type,
+						timeoutMs: INBOUND_NODE_PROCESSING_TIMEOUT_MS,
+						...getInboundNodeStage(node)
+					},
+					'offline node processing timed out; closing socket'
+				)
+				void ws.close()
+			}
 		}
 	)
 
@@ -2183,12 +2294,34 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		const isOffline = !!node.attrs.offline
+		const isOffline = isOfflineNode(node)
 
 		if (isOffline) {
+			setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.offlineQueue)
 			offlineNodeProcessor.enqueue(type, node)
 		} else {
-			await processNodeWithBuffer(node, identifier, exec)
+			setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.dispatch)
+			await processNodeWithTimeout(
+				processNodeWithBuffer(node, identifier, exec),
+				`inbound ${type} node`,
+				INBOUND_NODE_PROCESSING_TIMEOUT_MS,
+				{
+					onUnexpectedError: error => onUnexpectedError(error, `processing ${type}`),
+					onTimeout: error => {
+						logger.error(
+							{
+								event: INBOUND_DIAGNOSTIC_EVENTS.onlineTimeout,
+								err: error,
+								nodeType: type,
+								timeoutMs: INBOUND_NODE_PROCESSING_TIMEOUT_MS,
+								...getInboundNodeStage(node)
+							},
+							'inbound node processing timed out; closing socket'
+						)
+						void ws.close()
+					}
+				}
+			)
 		}
 	}
 
