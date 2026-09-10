@@ -310,7 +310,7 @@ export const prepareWAMessageMedia = async (
 			mediaKeyTimestamp: unixTimestampSeconds(),
 			...uploadData,
 			media: undefined
-		} as any)
+		})
 	})
 
 	if (uploadData.ptv) {
@@ -399,7 +399,14 @@ export const generateWAMessageContent = async (
 	options: MessageContentGenerationOptions
 ) => {
 	let m: WAMessageContent = {}
-	if (hasNonNullishProperty(message, 'text') && !('sections' in message) && !('buttons' in message) && !('templateButtons' in message) && !('interactiveButtons' in message) && !('shop' in message)) {
+	if (
+		hasNonNullishProperty(message, 'text') &&
+		!('sections' in message) &&
+		!('buttons' in message) &&
+		!('templateButtons' in message) &&
+		!('interactiveButtons' in message) &&
+		!('shop' in message)
+	) {
 		const extContent = { text: message.text } as WATextMessage
 
 		let urlInfo = message.linkPreview
@@ -1351,5 +1358,6 @@ export const patchMessageForMdIfRequired = (message: proto.IMessage) => {
 			}
 		}
 	}
+
 	return message
 }

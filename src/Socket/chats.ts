@@ -216,11 +216,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					content: [{ tag: 'privacy', attrs: {} }]
 				})
 				const privacyNode = getBinaryNodeChild(result, 'privacy')
-				const parsed = getBinaryNodeChildren(privacyNode || { tag: 'privacy', attrs: {}, content: [] }, 'list').map(list => ({
-					type: list.attrs.type || DEFAULT_STATUS_PRIVACY.type,
-					isDefault: list.attrs.default === 'true',
-					list: getBinaryNodeChildren(list, 'user').map(user => jidNormalizedUser(user.attrs.jid))
-				}))
+				const parsed = getBinaryNodeChildren(privacyNode || { tag: 'privacy', attrs: {}, content: [] }, 'list').map(
+					list => ({
+						type: list.attrs.type || DEFAULT_STATUS_PRIVACY.type,
+						isDefault: list.attrs.default === 'true',
+						list: getBinaryNodeChildren(list, 'user').map(user => jidNormalizedUser(user.attrs.jid))
+					})
+				)
 
 				if (parsed.length === 0) {
 					statusPrivacySettings = [DEFAULT_STATUS_PRIVACY]
@@ -245,7 +247,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		return statusPrivacySettings
 	}
 
-	const getStatusBroadcastRecipients = async (force = false) => {
+	const getStatusBroadcastRecipients = async () => {
 		const [privacy = DEFAULT_STATUS_PRIVACY] = await fetchStatusPrivacy(true)
 		const storedContacts = await getStoredStatusContacts()
 		const rawRecipients = getStatusRecipients({
