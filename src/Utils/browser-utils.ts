@@ -51,14 +51,18 @@ export const getBrowserInfo = (browser: string): BrowserInfo => {
 	if (browserType.includes('androidbusiness')) {
 		return { platform: proto.ClientPayload.UserAgent.Platform.SMB_ANDROID, isMobile: true }
 	}
+
 	if (browserType.includes('iphonebusiness')) {
 		return { platform: proto.ClientPayload.UserAgent.Platform.SMB_IOS, isMobile: true }
 	}
+
 	if (browserType.includes('android')) {
 		return { platform: proto.ClientPayload.UserAgent.Platform.ANDROID, isMobile: true }
 	}
+
 	if (browserType.includes('iphone')) {
 		return { platform: proto.ClientPayload.UserAgent.Platform.IOS, isMobile: true }
 	}
+
 	return { platform: proto.ClientPayload.UserAgent.Platform.WEB, isMobile: false }
 }
