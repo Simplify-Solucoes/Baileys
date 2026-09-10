@@ -101,6 +101,28 @@ type MexGqlResponse = {
 	errors?: unknown[]
 }
 
+type LegacyMexNewsletterProfileData = {
+	pn?: string
+	jid?: string
+}
+
+type LegacyMexNewsletterProfile = string | LegacyMexNewsletterProfileData
+
+type LegacyMexNewsletterUpdate = {
+	jid?: string
+	settings?: Record<string, unknown>
+	user?: string
+	added_profiles?: LegacyMexNewsletterProfile[]
+}
+
+type LegacyMexNewsletterData = {
+	operation?: string
+	updates?: LegacyMexNewsletterUpdate[]
+	data?: {
+		xwa2_notify_linked_profiles?: LegacyMexNewsletterUpdate
+	}
+}
+
 type ReachoutTimelockNotificationPayload = {
 	is_active?: boolean
 	enforcement_type?: string
@@ -113,6 +135,9 @@ type SocketWriteError = {
 		statusCode?: unknown
 	}
 }
+
+const getErrorMessage = (error: unknown): unknown =>
+	typeof error === 'object' && error !== null && 'message' in error ? error.message : undefined
 
 const ENFORCEMENT_TYPE_VALUES = new Set<string>(Object.values(ReachoutTimelockEnforcementType))
 
@@ -433,7 +458,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		let data: any
+		let data: LegacyMexNewsletterData
 		try {
 			const payloadContent = payloadNode.content
 			if (Array.isArray(payloadContent)) {
@@ -443,7 +468,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			const contentBuf =
 				typeof payloadContent === 'string' ? Buffer.from(payloadContent, 'binary') : Buffer.from(payloadContent)
-			data = JSON.parse(contentBuf.toString())
+			data = JSON.parse(contentBuf.toString()) as LegacyMexNewsletterData
 		} catch (error) {
 			logger.error({ err: error, node: binaryNodeToString(node) }, 'failed to parse mex newsletter notification')
 			return
@@ -566,7 +591,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				case 'update': {
 					const settingsNode = getBinaryNodeChild(child, 'settings')
 					if (settingsNode) {
-						const update: Record<string, any> = {}
+						const update: Record<string, string> = {}
 						const nameNode = getBinaryNodeChild(settingsNode, 'name')
 						if (nameNode?.content) update.name = nameNode.content.toString()
 
@@ -1366,8 +1391,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const jids = await readTcTokenIndex(authState.keys)
 			for (const jid of jids) tcTokenKnownJids.add(jid)
 			logger.debug({ count: tcTokenKnownJids.size }, 'loaded tctoken index')
-		} catch (err: any) {
-			logger.warn({ err: err?.message }, 'failed to load tctoken index')
+		} catch (err: unknown) {
+			logger.warn({ err: getErrorMessage(err) }, 'failed to load tctoken index')
 		}
 	})()
 
@@ -2194,8 +2219,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								onNewJidStored: trackTcTokenJid
 							})
 							logger.debug({ from: ackFrom }, 'completed 463 token recovery issuance')
-						} catch (err: any) {
-							logger.debug({ from: ackFrom, err: err?.message }, 'failed 463 token recovery issuance')
+						} catch (err: unknown) {
+							logger.debug({ from: ackFrom, err: getErrorMessage(err) }, 'failed 463 token recovery issuance')
 						} finally {
 							inFlight463Recoveries.delete(ackFrom)
 						}
@@ -2487,8 +2512,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			for (const jid of survivors) tcTokenKnownJids.add(jid)
 
 			logger.debug({ mutated, remaining: survivors.size }, 'pruned expired tctokens')
-		} catch (err: any) {
-			logger.warn({ err: err?.message }, 'failed to prune expired tctokens')
+		} catch (err: unknown) {
+			logger.warn({ err: getErrorMessage(err) }, 'failed to prune expired tctokens')
 		}
 	}
 
