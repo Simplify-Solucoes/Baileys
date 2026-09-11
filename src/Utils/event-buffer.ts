@@ -16,6 +16,7 @@ import { trimUndefined } from './generics'
 import type { ILogger } from './logger'
 import { updateMessageWithReaction, updateMessageWithReceipt } from './messages'
 import { isRealMessage, shouldIncrementChatUnread } from './process-message'
+import { assertSocketTaskActive } from './socket-task-guard'
 
 const BUFFERABLE_EVENT = [
 	'messaging-history.set',
@@ -62,6 +63,8 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
 	flush(): boolean
 	/** is there an ongoing buffer */
 	isBuffering(): boolean
+	/** drops buffered events without removing event listeners */
+	discard(): boolean
 	/** destroy the event buffer, clearing all resources */
 	destroy(): void
 }
@@ -70,7 +73,10 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
  * The event buffer logically consolidates different events into a single event
  * making the data processing more efficient.
  */
-export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter => {
+export const makeEventBuffer = (
+	logger: ILogger,
+	getCurrentTaskSignal?: () => AbortSignal | undefined
+): BaileysBufferableEventEmitter => {
 	const ev = new EventEmitter()
 	const historyCache = new Set<string>()
 
@@ -160,6 +166,30 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		return true
 	}
 
+	function discard() {
+		const hadBufferedEvents = isBuffering || bufferCount > 0
+
+		if (bufferTimeout) {
+			clearTimeout(bufferTimeout)
+			bufferTimeout = null
+		}
+
+		if (flushPendingTimeout) {
+			clearTimeout(flushPendingTimeout)
+			flushPendingTimeout = null
+		}
+
+		data = makeBufferData()
+		isBuffering = false
+		bufferCount = 0
+
+		if (hadBufferedEvents) {
+			logger.debug('Discarded buffered events from inactive socket generation')
+		}
+
+		return hadBufferedEvents
+	}
+
 	return {
 		process(handler) {
 			const listener = async (map: BaileysEventData) => {
@@ -172,6 +202,8 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 			}
 		},
 		emit<T extends BaileysEvent>(event: BaileysEvent, evData: BaileysEventMap[T]) {
+			assertSocketTaskActive(getCurrentTaskSignal?.())
+
 			// Check if this is a messages.upsert with a different type than what's buffered
 			// If so, flush the buffered messages first to avoid type overshadowing
 			if (event === 'messages.upsert') {
@@ -206,6 +238,7 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		},
 		buffer,
 		flush,
+		discard,
 		createBufferedFunction(work) {
 			return async (...args) => {
 				buffer()
@@ -238,24 +271,8 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		off: (...args) => ev.off(...args),
 		removeAllListeners: (...args) => ev.removeAllListeners(...args),
 		destroy() {
-			// Clear buffer timeout
-			if (bufferTimeout) {
-				clearTimeout(bufferTimeout)
-				bufferTimeout = null
-			}
-
-			if (flushPendingTimeout) {
-				clearTimeout(flushPendingTimeout)
-				flushPendingTimeout = null
-			}
-
-			// Clear history cache
+			discard()
 			historyCache.clear()
-			// Reset buffer data
-			data = makeBufferData()
-			isBuffering = false
-			bufferCount = 0
-			// Remove all listeners
 			ev.removeAllListeners()
 			logger.debug('Event buffer destroyed')
 		}

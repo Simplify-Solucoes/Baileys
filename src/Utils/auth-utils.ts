@@ -18,6 +18,7 @@ import { Curve, signedKeyPair } from './crypto'
 import { delay, generateRegistrationId } from './generics'
 import type { ILogger } from './logger'
 import { PreKeyManager } from './pre-key-manager'
+import { assertSocketTaskActive, isStaleSocketTaskError } from './socket-task-guard'
 
 /**
  * Transaction context stored in AsyncLocalStorage
@@ -26,6 +27,7 @@ interface TransactionContext {
 	cache: SignalDataSet
 	mutations: SignalDataSet
 	dbQueries: number
+	taskSignal?: AbortSignal
 }
 
 /**
@@ -116,7 +118,8 @@ export function makeCacheableSignalKeyStore(
 export const addTransactionCapability = (
 	state: SignalKeyStore,
 	logger: ILogger,
-	{ maxCommitRetries, delayBetweenTriesMs }: TransactionCapabilityOptions
+	{ maxCommitRetries, delayBetweenTriesMs }: TransactionCapabilityOptions,
+	getCurrentTaskSignal?: () => AbortSignal | undefined
 ): SignalKeyStoreWithTransaction => {
 	const txStorage = new AsyncLocalStorage<TransactionContext>()
 
@@ -188,7 +191,7 @@ export const addTransactionCapability = (
 	/**
 	 * Commit transaction with retries
 	 */
-	async function commitWithRetry(mutations: SignalDataSet): Promise<void> {
+	async function commitWithRetry(mutations: SignalDataSet, taskSignal: AbortSignal | undefined): Promise<void> {
 		if (Object.keys(mutations).length === 0) {
 			logger.trace('no mutations in transaction')
 			return
@@ -198,10 +201,16 @@ export const addTransactionCapability = (
 
 		for (let attempt = 0; attempt < maxCommitRetries; attempt++) {
 			try {
+				assertSocketTaskActive(taskSignal)
 				await state.set(mutations)
+				assertSocketTaskActive(taskSignal)
 				logger.trace({ mutationCount: Object.keys(mutations).length }, 'committed transaction')
 				return
 			} catch (error) {
+				if (isStaleSocketTaskError(error)) {
+					throw error
+				}
+
 				const retriesLeft = maxCommitRetries - attempt - 1
 				logger.warn(`failed to commit mutations, retries left=${retriesLeft}`)
 
@@ -217,10 +226,14 @@ export const addTransactionCapability = (
 	return {
 		get: async (type, ids) => {
 			const ctx = txStorage.getStore()
+			const taskSignal = ctx?.taskSignal ?? getCurrentTaskSignal?.()
+			assertSocketTaskActive(taskSignal)
 
 			if (!ctx) {
 				// No transaction - direct read without exclusive lock for concurrency
-				return state.get(type, ids)
+				const result = await state.get(type, ids)
+				assertSocketTaskActive(taskSignal)
+				return result
 			}
 
 			// In transaction - check cache first
@@ -231,7 +244,12 @@ export const addTransactionCapability = (
 				ctx.dbQueries++
 				logger.trace({ type, count: missing.length }, 'fetching missing keys in transaction')
 
-				const fetched = await getTxMutex(type).runExclusive(() => state.get(type, missing))
+				const fetched = await getTxMutex(type).runExclusive(async () => {
+					assertSocketTaskActive(taskSignal)
+					const result = await state.get(type, missing)
+					assertSocketTaskActive(taskSignal)
+					return result
+				})
 
 				// Update cache
 				ctx.cache[type] = ctx.cache[type] || ({} as any)
@@ -252,6 +270,8 @@ export const addTransactionCapability = (
 
 		set: async data => {
 			const ctx = txStorage.getStore()
+			const taskSignal = ctx?.taskSignal ?? getCurrentTaskSignal?.()
+			assertSocketTaskActive(taskSignal)
 
 			if (!ctx) {
 				// No transaction - direct write with queue protection
@@ -262,6 +282,7 @@ export const addTransactionCapability = (
 					const type = type_ as keyof SignalDataTypeMap
 					if (type === 'pre-key') {
 						await preKeyManager.validateDeletions(data, type)
+						assertSocketTaskActive(taskSignal)
 					}
 				}
 
@@ -269,8 +290,10 @@ export const addTransactionCapability = (
 				await Promise.all(
 					types.map(type =>
 						getQueue(type).add(async () => {
+							assertSocketTaskActive(taskSignal)
 							const typeData = { [type]: data[type as keyof SignalDataTypeMap] } as SignalDataSet
 							await state.set(typeData)
+							assertSocketTaskActive(taskSignal)
 						})
 					)
 				)
@@ -290,6 +313,7 @@ export const addTransactionCapability = (
 				// Special handling for pre-keys
 				if (key === 'pre-key') {
 					await preKeyManager.processOperations(data, key, ctx.cache, ctx.mutations, true)
+					assertSocketTaskActive(taskSignal)
 				} else {
 					// Normal key types
 					Object.assign(ctx.cache[key]!, data[key])
@@ -306,8 +330,14 @@ export const addTransactionCapability = (
 			// Nested transaction - reuse existing context
 			if (existing) {
 				logger.trace('reusing existing transaction context')
-				return work()
+				assertSocketTaskActive(existing.taskSignal)
+				const result = await work()
+				assertSocketTaskActive(existing.taskSignal)
+				return result
 			}
+
+			const taskSignal = getCurrentTaskSignal?.()
+			assertSocketTaskActive(taskSignal)
 
 			// New transaction - acquire mutex and create context
 			const mutex = getTxMutex(key)
@@ -315,25 +345,33 @@ export const addTransactionCapability = (
 
 			try {
 				return await mutex.runExclusive(async () => {
+					assertSocketTaskActive(taskSignal)
 					const ctx: TransactionContext = {
 						cache: {},
 						mutations: {},
-						dbQueries: 0
+						dbQueries: 0,
+						taskSignal
 					}
 
 					logger.trace('entering transaction')
 
 					try {
 						const result = await txStorage.run(ctx, work)
+						assertSocketTaskActive(taskSignal)
 
 						// Commit mutations
-						await commitWithRetry(ctx.mutations)
+						await commitWithRetry(ctx.mutations, taskSignal)
 
 						logger.trace({ dbQueries: ctx.dbQueries }, 'transaction completed')
 
 						return result
 					} catch (error) {
-						logger.error({ error }, 'transaction failed, rolling back')
+						if (isStaleSocketTaskError(error)) {
+							logger.debug('stopped Signal transaction from inactive socket generation')
+						} else {
+							logger.error({ error }, 'transaction failed, rolling back')
+						}
+
 						throw error
 					}
 				})

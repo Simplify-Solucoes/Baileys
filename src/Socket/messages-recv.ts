@@ -60,6 +60,7 @@ import { makeMutex } from '../Utils/make-mutex'
 import { isOfflineNode, makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import { processNodeWithTimeout } from '../Utils/process-node-with-timeout'
 import { resolveSignalSessionTarget } from '../Utils/signal-session-target'
+import { isStaleSocketTaskError } from '../Utils/socket-task-guard'
 import { buildAckStanza } from '../Utils/stanza-ack'
 import { getStatusSenderKeyMemoryKey } from '../Utils/status-sender-key-memory'
 import {
@@ -159,10 +160,17 @@ function isConnectionClosedError(error: unknown) {
 	)
 }
 
+const throwIfStaleSocketTask = (error: unknown): void => {
+	if (isStaleSocketTaskError(error)) {
+		throw error
+	}
+}
+
 const INBOUND_DIAGNOSTIC_EVENTS = {
 	onlineTimeout: 'whatsapp_session_inbound_online_node_timeout',
 	offlineTimeout: 'whatsapp_session_inbound_offline_node_timeout',
-	messageError: 'whatsapp_session_inbound_message_error'
+	messageError: 'whatsapp_session_inbound_message_error',
+	staleTaskDropped: 'whatsapp_session_inbound_stale_task_dropped'
 } as const
 
 const SIGNAL_SESSION_DIAGNOSTIC_EVENTS = {
@@ -225,6 +233,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		notificationMutex,
 		receiptMutex,
 		signalRepository,
+		socketTaskGuard,
 		query,
 		upsertMessage,
 		resyncAppState,
@@ -243,6 +252,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const invalidateInboundGeneration = () => {
+		socketTaskGuard.invalidate()
+		ev.discard()
+	}
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
@@ -633,6 +646,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							await upsertMessage(fullMessage, 'append')
 							logger.debug('Processed plaintext newsletter message')
 						} catch (error) {
+							throwIfStaleSocketTask(error)
 							logger.error({ error }, 'Failed to decode plaintext newsletter message')
 						}
 					}
@@ -654,7 +668,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const sendMessageAckFireAndForget = (node: BinaryNode, errorCode?: number) => {
+		if (!socketTaskGuard.isCurrentTaskActive()) {
+			return
+		}
+
 		void sendMessageAck(node, errorCode).catch(err => {
+			if (isStaleSocketTaskError(err)) {
+				logger.debug({ nodeType: node.tag }, 'dropping ack from inactive socket generation')
+				return
+			}
+
 			if (!ws.isOpen || isConnectionClosedError(err)) {
 				logger.debug({ recv: node.attrs }, 'dropping ack because socket closed')
 				return
@@ -673,14 +696,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		type: MessageReceiptType,
 		key: WAMessageKey
 	): void => {
+		if (!socketTaskGuard.isCurrentTaskActive()) {
+			return
+		}
+
 		if (type === 'sender' && !participant) {
 			logger.warn({ key }, 'skipping sender receipt: missing participant')
 			return
 		}
 
-		void sendReceipt(jid, participant ?? undefined, ids, type).catch(err =>
+		void sendReceipt(jid, participant ?? undefined, ids, type).catch(err => {
+			if (isStaleSocketTaskError(err)) {
+				logger.debug({ receiptType: type }, 'dropping receipt from inactive socket generation')
+				return
+			}
+
 			logger.error({ err, key, receiptType: type }, 'failed to send delivery receipt')
-		)
+		})
 	}
 
 	const rejectCall = async (callId: string, callFrom: string) => {
@@ -772,6 +804,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					forceIncludeKeys = true
 				}
 			} catch (error) {
+				throwIfStaleSocketTask(error)
 				logger.warn(
 					{ event: SIGNAL_SESSION_DIAGNOSTIC_EVENTS.recreationFailed, err: error },
 					'failed to check Signal session recreation'
@@ -790,6 +823,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							`sendRetryRequest: requested placeholder resend (${requestId}) for message ${msgId} (scheduled)`
 						)
 					} catch (error) {
+						if (isStaleSocketTaskError(error)) {
+							logger.debug('dropping scheduled retry from inactive socket generation')
+							return
+						}
+
 						logger.warn({ error, msgId }, 'failed to send scheduled phone request')
 					}
 				})
@@ -1238,6 +1276,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				try {
 					await handleDevicesNotification(node)
 				} catch (error) {
+					throwIfStaleSocketTask(error)
 					logger.error({ error, node }, 'failed to handle devices notification')
 				}
 
@@ -1570,6 +1609,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				injectedFromBundle = true
 				logger.debug({ participant, retryCount }, 'injected session from retry receipt key bundle')
 			} catch (error) {
+				throwIfStaleSocketTask(error)
 				logger.warn({ error, participant }, 'failed to inject session from retry receipt')
 			}
 		}
@@ -1636,6 +1676,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					await authState.keys.set({ session: { [sessionId]: null } })
 				}
 			} catch (error) {
+				throwIfStaleSocketTask(error)
 				logger.warn(
 					{ event: SIGNAL_SESSION_DIAGNOSTIC_EVENTS.recreationFailed, err: error },
 					'failed to check Signal session recreation for outgoing retry'
@@ -1810,6 +1851,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									logger.debug({ attrs, key }, 'recv retry request')
 									await sendMessagesAgain(key, ids, retryNode!, node)
 								} catch (error: unknown) {
+									throwIfStaleSocketTask(error)
 									logger.error(
 										{ key, ids, trace: error instanceof Error ? error.stack : 'Unknown error' },
 										'error in sending message again'
@@ -1976,6 +2018,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								}
 							})
 							.catch(err => {
+								if (isStaleSocketTaskError(err)) {
+									logger.debug('dropping placeholder resend from inactive socket generation')
+									return
+								}
+
 								logger.warn({ err, msgId: msg.key.id }, 'failed to request placeholder resend for unavailable message')
 							})
 						acked = true
@@ -2012,6 +2059,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									await delay(retryRequestDelayMs)
 								}
 							} catch (err) {
+								throwIfStaleSocketTask(err)
 								logger.error({ err }, 'Failed to send retry')
 							}
 
@@ -2092,6 +2140,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				setInboundNodeStage(node, INBOUND_PROCESSING_STAGES.completed)
 			})
 		} catch (error) {
+			if (isStaleSocketTaskError(error)) {
+				logger.warn(
+					{
+						event: INBOUND_DIAGNOSTIC_EVENTS.staleTaskDropped,
+						nodeType: node.tag,
+						...getInboundNodeStage(node)
+					},
+					'dropped message work from inactive socket generation'
+				)
+				return
+			}
+
 			logger.error(
 				{
 					event: INBOUND_DIAGNOSTIC_EVENTS.messageError,
@@ -2163,6 +2223,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			ev.emit('call', [call])
 		} catch (error) {
+			throwIfStaleSocketTask(error)
 			logger.error({ error, node: binaryNodeToString(node) }, 'error in handling call')
 		} finally {
 			sendMessageAckFireAndForget(node)
@@ -2265,22 +2326,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	) => {
 		ev.buffer()
 		await execTask()
-		ev.flush()
+		if (socketTaskGuard.isGenerationActive()) {
+			ev.flush()
+		} else {
+			ev.discard()
+		}
 
 		function execTask() {
-			return exec(node, false).catch(err => onUnexpectedError(err, identifier))
+			return socketTaskGuard.run(() => exec(node, false)).catch(err => onUnexpectedError(err, identifier))
 		}
 	}
 
 	const offlineNodeProcessor = makeOfflineNodeProcessor(
 		new Map<MessageType, (node: BinaryNode) => Promise<void>>([
-			['message', handleMessage],
-			['call', handleCall],
-			['receipt', handleReceipt],
-			['notification', handleNotification]
+			['message', node => socketTaskGuard.run(() => handleMessage(node))],
+			['call', node => socketTaskGuard.run(() => handleCall(node))],
+			['receipt', node => socketTaskGuard.run(() => handleReceipt(node))],
+			['notification', node => socketTaskGuard.run(() => handleNotification(node))]
 		]),
 		{
-			isWsOpen: () => ws.isOpen,
+			isWsOpen: () => ws.isOpen && socketTaskGuard.isGenerationActive(),
 			onUnexpectedError,
 			yieldToEventLoop: () => new Promise(resolve => setImmediate(resolve)),
 			itemTimeoutMs: inboundNodeProcessingTimeoutMs,
@@ -2295,6 +2360,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					},
 					'offline node processing timed out; closing socket'
 				)
+				invalidateInboundGeneration()
 				void ws.close()
 			}
 		}
@@ -2348,6 +2414,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							},
 							'inbound node processing timed out; closing socket'
 						)
+						invalidateInboundGeneration()
 						void ws.close()
 					}
 				}
@@ -2372,7 +2439,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await processNode('notification', node, 'handling notification', handleNotification)
 	})
 	ws.on('CB:ack,class:message', (node: BinaryNode) => {
-		handleBadAck(node).catch(error => onUnexpectedError(error, 'handling bad ack'))
+		void socketTaskGuard.run(() => handleBadAck(node)).catch(error => onUnexpectedError(error, 'handling bad ack'))
 	})
 
 	ev.on('call', async ([call]) => {

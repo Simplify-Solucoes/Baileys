@@ -18,6 +18,29 @@ import {
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
 import type { ILogger } from './logger'
+import { isStaleSocketTaskError } from './socket-task-guard'
+
+const getErrorMessage = (error: unknown): string => {
+	if (error === null || typeof error === 'undefined') {
+		return ''
+	}
+
+	if (error instanceof Error) {
+		return error.message
+	}
+
+	if (typeof error === 'object' && error !== null && 'message' in error) {
+		return String(error.message)
+	}
+
+	return String(error)
+}
+
+const throwIfStaleSocketTask = (error: unknown): void => {
+	if (isStaleSocketTaskError(error)) {
+		throw error
+	}
+}
 
 export const getDecryptionJid = async (sender: string, repository: SignalRepositoryWithLIDStore): Promise<string> => {
 	if (isLidUser(sender) || isHostedLidUser(sender)) {
@@ -44,6 +67,7 @@ const storeMappingFromEnvelope = async (
 			await repository.migrateSession(sender, senderAlt)
 			logger.debug({ sender, senderAlt }, 'Stored LID mapping from envelope')
 		} catch (error) {
+			throwIfStaleSocketTask(error)
 			logger.warn({ sender, senderAlt, error }, 'Failed to store LID mapping')
 		}
 	}
@@ -348,6 +372,7 @@ export const decryptMessageNode = (
 									item: msg.senderKeyDistributionMessage
 								})
 							} catch (err) {
+								throwIfStaleSocketTask(err)
 								logger.error({ key: fullMessage.key, err }, 'failed to process sender key distribution message')
 							}
 						}
@@ -357,7 +382,8 @@ export const decryptMessageNode = (
 						} else {
 							fullMessage.message = msg
 						}
-					} catch (err: any) {
+					} catch (err: unknown) {
+						throwIfStaleSocketTask(err)
 						const errorContext = {
 							key: fullMessage.key,
 							err,
@@ -370,7 +396,7 @@ export const decryptMessageNode = (
 						logger.error(errorContext, 'failed to decrypt message')
 
 						fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
-						fullMessage.messageStubParameters = [err.message.toString()]
+						fullMessage.messageStubParameters = [getErrorMessage(err)]
 					}
 				}
 			}
@@ -387,7 +413,7 @@ export const decryptMessageNode = (
 /**
  * Utility function to check if an error is related to missing session record
  */
-function isSessionRecordError(error: any): boolean {
-	const errorMessage = error?.message || error?.toString() || ''
+function isSessionRecordError(error: unknown): boolean {
+	const errorMessage = getErrorMessage(error)
 	return DECRYPTION_RETRY_CONFIG.sessionRecordErrors.some(errorPattern => errorMessage.includes(errorPattern))
 }

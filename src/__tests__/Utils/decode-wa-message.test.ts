@@ -1,5 +1,9 @@
 import { Boom } from '@hapi/boom'
-import { decodeMessageNode } from '../../Utils/decode-wa-message'
+import { jest } from '@jest/globals'
+import type { SignalRepositoryWithLIDStore } from '../../Types/Signal'
+import { decodeMessageNode, decryptMessageNode } from '../../Utils/decode-wa-message'
+import type { ILogger } from '../../Utils/logger'
+import { StaleSocketTaskError } from '../../Utils/socket-task-guard'
 import type { BinaryNode } from '../../WABinary'
 
 const ME_ID = '5511999999999@s.whatsapp.net'
@@ -22,6 +26,18 @@ const captureThrow = (fn: () => unknown): unknown => {
 
 	throw new Error('expected function to throw')
 }
+
+const makeTestLogger = (): ILogger =>
+	({
+		level: 'silent',
+		child: () => makeTestLogger(),
+		trace: jest.fn(),
+		debug: jest.fn(),
+		info: jest.fn(),
+		warn: jest.fn(),
+		error: jest.fn(),
+		fatal: jest.fn()
+	}) as unknown as ILogger
 
 describe('decodeMessageNode', () => {
 	describe('validation', () => {
@@ -81,6 +97,29 @@ describe('decodeMessageNode', () => {
 			expect(result.fullMessage.key.remoteJid).toBe(GROUP_ID)
 			expect(result.fullMessage.key.participant).toBe(PEER_ID)
 			expect(result.author).toBe(PEER_ID)
+		})
+	})
+
+	describe('socket generation fencing', () => {
+		it('does not turn an inactive-generation error into a ciphertext placeholder', async () => {
+			const staleError = new StaleSocketTaskError()
+			const repository = {
+				lidMapping: {
+					getLIDForPN: jest.fn<() => Promise<undefined>>().mockResolvedValue(undefined)
+				},
+				decryptMessage: jest.fn<() => Promise<Uint8Array>>().mockRejectedValue(staleError)
+			} as unknown as SignalRepositoryWithLIDStore
+			const stanza: BinaryNode = {
+				tag: 'message',
+				attrs: { id: 'MSG_STALE', from: PEER_ID, t: '1700000000' },
+				content: [{ tag: 'enc', attrs: { type: 'msg' }, content: new Uint8Array([1]) }]
+			}
+			const logger = makeTestLogger()
+			const result = decryptMessageNode(stanza, ME_ID, ME_LID, repository, logger)
+
+			await expect(result.decrypt()).rejects.toBe(staleError)
+			expect(result.fullMessage.messageStubType).toBeUndefined()
+			expect(logger.error).not.toHaveBeenCalled()
 		})
 	})
 })
