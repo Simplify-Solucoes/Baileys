@@ -159,8 +159,6 @@ function isConnectionClosedError(error: unknown) {
 	)
 }
 
-const INBOUND_NODE_PROCESSING_TIMEOUT_MS = 60_000
-
 const INBOUND_DIAGNOSTIC_EVENTS = {
 	onlineTimeout: 'whatsapp_session_inbound_online_node_timeout',
 	offlineTimeout: 'whatsapp_session_inbound_offline_node_timeout',
@@ -207,8 +205,15 @@ const getInboundNodeStage = (node: BinaryNode) => {
 }
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
-	const { logger, retryRequestDelayMs, maxMsgRetryCount, getMessage, shouldIgnoreJid, enableAutoSessionRecreation } =
-		config
+	const {
+		logger,
+		retryRequestDelayMs,
+		maxMsgRetryCount,
+		getMessage,
+		shouldIgnoreJid,
+		enableAutoSessionRecreation,
+		inboundNodeProcessingTimeoutMs
+	} = config
 	const sock = makeMessagesSocket(config)
 	const {
 		userDevicesCache,
@@ -2278,14 +2283,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			isWsOpen: () => ws.isOpen,
 			onUnexpectedError,
 			yieldToEventLoop: () => new Promise(resolve => setImmediate(resolve)),
-			itemTimeoutMs: INBOUND_NODE_PROCESSING_TIMEOUT_MS,
+			itemTimeoutMs: inboundNodeProcessingTimeoutMs,
 			onItemTimeout: (error, type, node) => {
 				logger.error(
 					{
 						event: INBOUND_DIAGNOSTIC_EVENTS.offlineTimeout,
 						err: error,
 						nodeType: type,
-						timeoutMs: INBOUND_NODE_PROCESSING_TIMEOUT_MS,
+						timeoutMs: inboundNodeProcessingTimeoutMs,
 						...getInboundNodeStage(node)
 					},
 					'offline node processing timed out; closing socket'
@@ -2329,7 +2334,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			await processNodeWithTimeout(
 				processNodeWithBuffer(node, identifier, exec),
 				`inbound ${type} node`,
-				INBOUND_NODE_PROCESSING_TIMEOUT_MS,
+				inboundNodeProcessingTimeoutMs,
 				{
 					onUnexpectedError: error => onUnexpectedError(error, `processing ${type}`),
 					onTimeout: error => {
@@ -2338,7 +2343,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								event: INBOUND_DIAGNOSTIC_EVENTS.onlineTimeout,
 								err: error,
 								nodeType: type,
-								timeoutMs: INBOUND_NODE_PROCESSING_TIMEOUT_MS,
+								timeoutMs: inboundNodeProcessingTimeoutMs,
 								...getInboundNodeStage(node)
 							},
 							'inbound node processing timed out; closing socket'

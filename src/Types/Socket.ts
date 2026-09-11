@@ -50,6 +50,8 @@ export type SocketConfig = {
 	connectTimeoutMs: number
 	/** Default timeout for queries, undefined for no timeout */
 	defaultQueryTimeoutMs: number | undefined
+	/** Maximum time to process an inbound node before recycling the socket */
+	inboundNodeProcessingTimeoutMs: number
 	/** ping-pong interval for WS connection */
 	keepAliveIntervalMs: number
 	/** should baileys use the mobile api instead of the multi device api
