@@ -44,6 +44,7 @@ import {
 	signedKeyPair,
 	xmppSignedPreKey
 } from '../Utils'
+import { assertSocketTaskActive, isStaleSocketTaskError, makeSocketTaskGuard } from '../Utils/socket-task-guard'
 import {
 	assertNodeErrorFree,
 	type BinaryNode,
@@ -61,6 +62,10 @@ import { BinaryInfo } from '../WAM/BinaryInfo.js'
 import { USyncQuery, USyncUser } from '../WAUSync/'
 import { WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex.js'
+
+const SOCKET_DIAGNOSTIC_EVENTS = {
+	staleTaskDropped: 'whatsapp_socket_stale_task_dropped'
+} as const
 
 /**
  * Connects to WA servers and performs:
@@ -134,12 +139,16 @@ export const makeSocket = (config: SocketConfig) => {
 	})
 
 	const ws = new WebSocketClient(url, config)
+	const socketTaskGuard = makeSocketTaskGuard()
 
 	ws.connect()
 
 	const sendPromise = promisify(ws.send)
 	/** send a raw buffer */
 	const sendRawMessage = async (data: Uint8Array | Buffer) => {
+		const taskSignal = socketTaskGuard.getCurrentSignal()
+		assertSocketTaskActive(taskSignal)
+
 		if (!ws.isOpen) {
 			throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
 		}
@@ -147,7 +156,9 @@ export const makeSocket = (config: SocketConfig) => {
 		const bytes = noise.encodeFrame(data)
 		await promiseTimeout<void>(connectTimeoutMs, async (resolve, reject) => {
 			try {
+				assertSocketTaskActive(taskSignal)
 				await sendPromise.call(ws, bytes)
+				assertSocketTaskActive(taskSignal)
 				resolve()
 			} catch (error) {
 				reject(error)
@@ -379,11 +390,13 @@ export const makeSocket = (config: SocketConfig) => {
 		return []
 	}
 
-	const ev = makeEventBuffer(logger)
+	const ev = makeEventBuffer(logger, () => socketTaskGuard.getCurrentSignal())
 
 	const { creds } = authState
 	// add transaction capability
-	const keys = addTransactionCapability(authState.keys, logger, transactionOpts)
+	const keys = addTransactionCapability(authState.keys, logger, transactionOpts, () =>
+		socketTaskGuard.getCurrentSignal()
+	)
 	const signalRepository = makeSignalRepository({ creds, keys }, logger, pnFromLIDUSync)
 
 	let lastDateRecv: Date
@@ -396,6 +409,14 @@ export const makeSocket = (config: SocketConfig) => {
 
 	/** log & process any unexpected errors */
 	const onUnexpectedError = (err: Error | Boom, msg: string) => {
+		if (isStaleSocketTaskError(err)) {
+			logger.warn(
+				{ event: SOCKET_DIAGNOSTIC_EVENTS.staleTaskDropped, operation: msg },
+				'dropped work from inactive socket generation'
+			)
+			return
+		}
+
 		logger.error({ err }, `unexpected error in '${msg}'`)
 	}
 
@@ -624,48 +645,51 @@ export const makeSocket = (config: SocketConfig) => {
 		})
 	}
 
-	const end = async (error: Error | undefined) => {
-		if (closed) {
-			logger.trace({ trace: error?.stack }, 'connection already closed')
-			return
-		}
-
-		closed = true
-		logger.info({ trace: error?.stack }, error ? 'connection errored' : 'connection closed')
-
-		clearInterval(keepAliveReq)
-		clearTimeout(qrTimer)
-
-		ws.removeAllListeners('close')
-		ws.removeAllListeners('open')
-		ws.removeAllListeners('message')
-
-		signalRepository.close?.()
-
-		if (!ws.isClosed && !ws.isClosing) {
-			try {
-				await ws.close()
-			} catch {}
-		}
-
-		for (const handler of socketEndHandlers) {
-			try {
-				await handler(error)
-			} catch (err) {
-				logger.error({ err }, 'error in socket end handler')
+	const end = (error: Error | undefined) =>
+		socketTaskGuard.runUntracked(async () => {
+			if (closed) {
+				logger.trace({ trace: error?.stack }, 'connection already closed')
+				return
 			}
-		}
 
-		ev.emit('connection.update', {
-			connection: 'close',
-			lastDisconnect: {
-				error,
-				date: new Date()
+			closed = true
+			socketTaskGuard.invalidate()
+			ev.discard()
+			logger.info({ trace: error?.stack }, error ? 'connection errored' : 'connection closed')
+
+			clearInterval(keepAliveReq)
+			clearTimeout(qrTimer)
+
+			ws.removeAllListeners('close')
+			ws.removeAllListeners('open')
+			ws.removeAllListeners('message')
+
+			signalRepository.close?.()
+
+			if (!ws.isClosed && !ws.isClosing) {
+				try {
+					await ws.close()
+				} catch {}
 			}
+
+			for (const handler of socketEndHandlers) {
+				try {
+					await handler(error)
+				} catch (err) {
+					logger.error({ err }, 'error in socket end handler')
+				}
+			}
+
+			ev.emit('connection.update', {
+				connection: 'close',
+				lastDisconnect: {
+					error,
+					date: new Date()
+				}
+			})
+			ev.removeAllListeners('connection.update')
+			ev.destroy()
 		})
-		ev.removeAllListeners('connection.update')
-		ev.destroy()
-	}
 
 	const waitForSocketOpen = async () => {
 		if (ws.isOpen) {
@@ -1158,6 +1182,7 @@ export const makeSocket = (config: SocketConfig) => {
 		ev,
 		authState: { creds, keys },
 		signalRepository,
+		socketTaskGuard,
 		get user() {
 			return authState.creds.me
 		},

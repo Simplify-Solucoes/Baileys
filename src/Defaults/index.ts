@@ -58,6 +58,8 @@ export const DEFAULT_CACHE_TTLS = {
 	USER_DEVICES: 5 * 60 // 5 minutes
 }
 
+export const DEFAULT_INBOUND_NODE_PROCESSING_TIMEOUT_MS = 120_000
+
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	version: version as WAVersion,
 	browser: Browsers.macOS('Chrome'),
@@ -67,6 +69,7 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	logger: logger.child({ class: 'baileys' }),
 	emitOwnEvents: true,
 	defaultQueryTimeoutMs: 60_000,
+	inboundNodeProcessingTimeoutMs: DEFAULT_INBOUND_NODE_PROCESSING_TIMEOUT_MS,
 	customUploadHosts: [],
 	retryRequestDelayMs: 250,
 	maxMsgRetryCount: 5,

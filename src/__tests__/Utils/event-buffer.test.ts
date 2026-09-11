@@ -1,6 +1,7 @@
 import type { BaileysEventMap } from '../../Types'
 import { makeEventBuffer } from '../../Utils/event-buffer'
 import type { ILogger } from '../../Utils/logger'
+import { makeSocketTaskGuard, StaleSocketTaskError } from '../../Utils/socket-task-guard'
 
 const makeTestLogger = (): ILogger =>
 	({
@@ -15,6 +16,34 @@ const makeTestLogger = (): ILogger =>
 	}) as unknown as ILogger
 
 describe('event-buffer', () => {
+	it('discards buffered events and blocks late emissions from an inactive generation', async () => {
+		let releaseTask: (() => void) | undefined
+		const taskGate = new Promise<void>(resolve => {
+			releaseTask = resolve
+		})
+		const logger = makeTestLogger()
+		const guard = makeSocketTaskGuard()
+		const ev = makeEventBuffer(logger, () => guard.getCurrentSignal())
+		const receivedEvents: string[][] = []
+		ev.on('chats.delete', (ids: string[]) => receivedEvents.push(ids))
+
+		const task = guard.run(async () => {
+			ev.buffer()
+			ev.emit('chats.delete', ['buffered-before-timeout'])
+			await taskGate
+			ev.emit('chats.delete', ['late-after-timeout'])
+		})
+
+		guard.invalidate()
+		expect(ev.discard()).toBe(true)
+		releaseTask?.()
+
+		await expect(task).rejects.toBeInstanceOf(StaleSocketTaskError)
+		expect(ev.flush()).toBe(false)
+		expect(receivedEvents).toEqual([])
+		ev.destroy()
+	})
+
 	describe('messaging-history.set pastParticipants buffering', () => {
 		it('should include pastParticipants in flushed event', async () => {
 			const logger = makeTestLogger()

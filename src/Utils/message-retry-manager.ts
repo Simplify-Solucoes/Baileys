@@ -61,6 +61,7 @@ export enum RetryReason {
 
 /** Error codes that indicate a MAC failure and require immediate session recreation */
 const MAC_ERROR_CODES = new Set([RetryReason.SignalErrorInvalidMessage, RetryReason.SignalErrorBadMac])
+const SIGNAL_MAC_ERROR_EVENT = 'whatsapp_signal_mac_error'
 
 export class MessageRetryManager {
 	private recentMessagesMap = new LRUCache<string, RecentMessage>({
@@ -166,8 +167,12 @@ export class MessageRetryManager {
 			this.sessionRecreateHistory.set(jid, Date.now())
 			this.statistics.sessionRecreations++
 			this.logger.warn(
-				{ jid, errorCode: RetryReason[errorCode] },
-				'MAC error detected, forcing immediate session recreation'
+				{
+					event: SIGNAL_MAC_ERROR_EVENT,
+					retryErrorCode: errorCode,
+					retryErrorName: RetryReason[errorCode]
+				},
+				'MAC error detected, forcing immediate Signal session recreation'
 			)
 			return {
 				reason: `MAC error (code ${errorCode}: ${RetryReason[errorCode]}), immediate session recreation`,
