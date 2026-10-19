@@ -1,4 +1,6 @@
 import { Boom } from '@hapi/boom'
+import { jest } from '@jest/globals'
+import { AsyncLocalStorage } from 'async_hooks'
 import type { AuthenticationCreds, Contact, SignalDataSet, SignalDataTypeMap, SignalKeyStore } from '../../Types'
 import { addTransactionCapability, assertMeId, initAuthCreds } from '../../Utils/auth-utils'
 import type { ILogger } from '../../Utils/logger'
@@ -58,6 +60,63 @@ describe('assertMeId', () => {
 })
 
 describe('addTransactionCapability task fencing', () => {
+	it('keeps storage instances bounded when key stores are recreated', async () => {
+		const run = jest.spyOn(AsyncLocalStorage.prototype, 'run')
+		try {
+			for (let generation = 0; generation < 100; generation++) {
+				const keys = addTransactionCapability(
+					makeSignalKeyStore(async () => {}),
+					makeTestLogger(),
+					{
+						maxCommitRetries: 1,
+						delayBetweenTriesMs: 0
+					}
+				)
+				await keys.transaction(async () => {}, 'session')
+			}
+
+			expect(new Set(run.mock.contexts).size).toBe(1)
+		} finally {
+			run.mockRestore()
+		}
+	})
+
+	it('isolates nested key stores and restores the outer transaction', async () => {
+		const firstPersisted: SignalDataSet[] = []
+		const secondPersisted: SignalDataSet[] = []
+		const options = { maxCommitRetries: 1, delayBetweenTriesMs: 0 }
+		const first = addTransactionCapability(
+			makeSignalKeyStore(async data => {
+				firstPersisted.push(data)
+			}),
+			makeTestLogger(),
+			options
+		)
+		const second = addTransactionCapability(
+			makeSignalKeyStore(async data => {
+				secondPersisted.push(data)
+			}),
+			makeTestLogger(),
+			options
+		)
+
+		await first.transaction(async () => {
+			await first.set({ session: { shared: new Uint8Array([1]) } })
+			expect(second.isInTransaction()).toBe(false)
+			await second.transaction(async () => {
+				await second.set({ session: { shared: new Uint8Array([2]) } })
+				await first.transaction(async () => {
+					expect(await first.get('session', ['shared'])).toEqual({ shared: new Uint8Array([1]) })
+					expect(await second.get('session', ['shared'])).toEqual({ shared: new Uint8Array([2]) })
+				}, 'shared')
+			}, 'shared')
+			expect(second.isInTransaction()).toBe(false)
+			expect(firstPersisted).toEqual([])
+		}, 'shared')
+		expect(firstPersisted).toEqual([{ session: { shared: new Uint8Array([1]) } }])
+		expect(secondPersisted).toEqual([{ session: { shared: new Uint8Array([2]) } }])
+	})
+
 	it('preserves transactions that are not tied to a socket task', async () => {
 		const persisted: SignalDataSet[] = []
 		const keys = addTransactionCapability(

@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from 'async_hooks'
 
+// Keep storage lifetime independent of socket churn; maps belong only to their async resources.
+const taskStorage = new AsyncLocalStorage<ReadonlyMap<AbortController, AbortSignal>>()
+
 export const STALE_SOCKET_TASK_ERROR_CODE = 'ERR_STALE_SOCKET_TASK'
 
 export class StaleSocketTaskError extends Error {
@@ -28,24 +31,30 @@ export const assertSocketTaskActive = (signal: AbortSignal | undefined): void =>
 }
 
 export const makeSocketTaskGuard = () => {
-	const taskStorage = new AsyncLocalStorage<AbortSignal>()
 	const generationController = new AbortController()
 
 	return {
-		run<T>(work: () => Promise<T> | T): Promise<T> {
-			return taskStorage.run(generationController.signal, async () => {
-				assertSocketTaskActive(generationController.signal)
-				return work()
-			})
+		async run<T>(work: () => Promise<T> | T): Promise<T> {
+			assertSocketTaskActive(generationController.signal)
+			const contexts = new Map(taskStorage.getStore())
+			contexts.set(generationController, generationController.signal)
+			return taskStorage.run(contexts, async () => work())
 		},
 		getCurrentSignal(): AbortSignal | undefined {
-			return taskStorage.getStore()
+			return taskStorage.getStore()?.get(generationController)
 		},
 		runUntracked<T>(work: () => T): T {
-			return taskStorage.exit(work)
+			const current = taskStorage.getStore()
+			if (!current?.has(generationController)) {
+				return work()
+			}
+
+			const contexts = new Map(current)
+			contexts.delete(generationController)
+			return taskStorage.run(contexts, work)
 		},
 		isCurrentTaskActive(): boolean {
-			return !generationController.signal.aborted && !taskStorage.getStore()?.aborted
+			return !generationController.signal.aborted && !taskStorage.getStore()?.get(generationController)?.aborted
 		},
 		isGenerationActive(): boolean {
 			return !generationController.signal.aborted

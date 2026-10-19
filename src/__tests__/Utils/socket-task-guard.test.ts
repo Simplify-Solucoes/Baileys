@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals'
+import { AsyncLocalStorage } from 'async_hooks'
 import { processNodeWithTimeout } from '../../Utils/process-node-with-timeout'
 import { assertSocketTaskActive, makeSocketTaskGuard, StaleSocketTaskError } from '../../Utils/socket-task-guard'
 
@@ -15,6 +16,74 @@ const createDeferred = () => {
 }
 
 describe('socket task guard', () => {
+	it('rejects late tasks before entering async storage', async () => {
+		const guard = makeSocketTaskGuard()
+		guard.invalidate()
+		const run = jest.spyOn(AsyncLocalStorage.prototype, 'run')
+		const work = jest.fn(async () => {})
+		try {
+			await expect(guard.run(work)).rejects.toBeInstanceOf(StaleSocketTaskError)
+			expect(work).not.toHaveBeenCalled()
+			expect(run).not.toHaveBeenCalled()
+		} finally {
+			run.mockRestore()
+		}
+	})
+
+	it('keeps storage instances bounded across invalidated generations', async () => {
+		const run = jest.spyOn(AsyncLocalStorage.prototype, 'run')
+		try {
+			for (let generation = 0; generation < 100; generation++) {
+				const guard = makeSocketTaskGuard()
+				await guard.run(async () => {})
+				await guard.runUntracked(async () => guard.invalidate())
+			}
+
+			expect(new Set(run.mock.contexts).size).toBe(1)
+		} finally {
+			run.mockRestore()
+		}
+	})
+
+	it('untracks only its own generation while preserving nested guards', async () => {
+		const first = makeSocketTaskGuard()
+		const second = makeSocketTaskGuard()
+		await first.run(async () => {
+			const firstSignal = first.getCurrentSignal()
+			expect(firstSignal).toBeDefined()
+			expect(second.getCurrentSignal()).toBeUndefined()
+			await second.run(async () => {
+				const secondSignal = second.getCurrentSignal()
+				expect(secondSignal).toBeDefined()
+				expect(first.getCurrentSignal()).toBe(firstSignal)
+				await first.runUntracked(async () => {
+					await Promise.resolve()
+					expect(first.getCurrentSignal()).toBeUndefined()
+					expect(second.getCurrentSignal()).toBe(secondSignal)
+				})
+				expect(first.getCurrentSignal()).toBe(firstSignal)
+			})
+			expect(second.getCurrentSignal()).toBeUndefined()
+		})
+	})
+
+	it('preserves invalidation in pending work while a new generation runs', async () => {
+		const first = makeSocketTaskGuard()
+		const second = makeSocketTaskGuard()
+		const deferred = createDeferred()
+		const pending = first.run(async () => {
+			await deferred.promise
+			assertSocketTaskActive(first.getCurrentSignal())
+		})
+		await first.runUntracked(async () => first.invalidate())
+		await second.run(async () => {
+			expect(second.getCurrentSignal()?.aborted).toBe(false)
+			expect(first.getCurrentSignal()).toBeUndefined()
+			deferred.resolve()
+			await expect(pending).rejects.toBeInstanceOf(StaleSocketTaskError)
+		})
+	})
+
 	it('blocks effects when a timed out task completes after invalidation', async () => {
 		jest.useFakeTimers()
 		try {
