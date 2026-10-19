@@ -30,6 +30,9 @@ interface TransactionContext {
 	taskSignal?: AbortSignal
 }
 
+// Each async scope carries isolated key-store contexts without allocating storage per socket.
+const txStorage = new AsyncLocalStorage<ReadonlyMap<symbol, TransactionContext>>()
+
 /**
  * Adds caching capability to a SignalKeyStore
  * @param store the store to add caching to
@@ -121,7 +124,8 @@ export const addTransactionCapability = (
 	{ maxCommitRetries, delayBetweenTriesMs }: TransactionCapabilityOptions,
 	getCurrentTaskSignal?: () => AbortSignal | undefined
 ): SignalKeyStoreWithTransaction => {
-	const txStorage = new AsyncLocalStorage<TransactionContext>()
+	const transactionScope = Symbol('signal-key-store')
+	const getTransactionContext = () => txStorage.getStore()?.get(transactionScope)
 
 	// Queues for concurrency control (keyed by signal data type - bounded set)
 	const keyQueues = new Map<string, PQueue>()
@@ -185,7 +189,7 @@ export const addTransactionCapability = (
 	 * Check if currently in a transaction
 	 */
 	function isInTransaction(): boolean {
-		return !!txStorage.getStore()
+		return !!getTransactionContext()
 	}
 
 	/**
@@ -225,7 +229,7 @@ export const addTransactionCapability = (
 
 	return {
 		get: async (type, ids) => {
-			const ctx = txStorage.getStore()
+			const ctx = getTransactionContext()
 			const taskSignal = ctx?.taskSignal ?? getCurrentTaskSignal?.()
 			assertSocketTaskActive(taskSignal)
 
@@ -269,7 +273,7 @@ export const addTransactionCapability = (
 		},
 
 		set: async data => {
-			const ctx = txStorage.getStore()
+			const ctx = getTransactionContext()
 			const taskSignal = ctx?.taskSignal ?? getCurrentTaskSignal?.()
 			assertSocketTaskActive(taskSignal)
 
@@ -325,7 +329,7 @@ export const addTransactionCapability = (
 		isInTransaction,
 
 		transaction: async (work, key) => {
-			const existing = txStorage.getStore()
+			const existing = getTransactionContext()
 
 			// Nested transaction - reuse existing context
 			if (existing) {
@@ -356,7 +360,9 @@ export const addTransactionCapability = (
 					logger.trace('entering transaction')
 
 					try {
-						const result = await txStorage.run(ctx, work)
+						const contexts = new Map(txStorage.getStore())
+						contexts.set(transactionScope, ctx)
+						const result = await txStorage.run(contexts, work)
 						assertSocketTaskActive(taskSignal)
 
 						// Commit mutations
