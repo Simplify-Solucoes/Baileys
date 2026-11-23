@@ -32,6 +32,14 @@ describe('makeOfflineNodeProcessor', () => {
 	})
 
 	describe('offline classification', () => {
+		it.each(['0', '1', '2', '6'])('queues replayed status stanzas marked offline=%s', offline => {
+			expect(isOfflineNode({ tag: 'status', attrs: { offline } })).toBe(true)
+		})
+
+		it('handles live status stanzas without an offline marker immediately', () => {
+			expect(isOfflineNode({ tag: 'status', attrs: {} })).toBe(false)
+		})
+
 		it('treats only the protocol value "1" as offline', () => {
 			expect(isOfflineNode(makeNode('offline'))).toBe(true)
 			expect(isOfflineNode({ ...makeNode('online'), attrs: { id: 'online', offline: '0' } })).toBe(false)
