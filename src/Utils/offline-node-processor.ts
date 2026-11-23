@@ -1,9 +1,11 @@
 import type { BinaryNode } from '../WABinary'
 import { processNodeWithTimeout } from './process-node-with-timeout'
 
-export type MessageType = 'message' | 'call' | 'receipt' | 'notification'
+export type MessageType = 'message' | 'status' | 'call' | 'receipt' | 'notification'
 
-export const isOfflineNode = (node: BinaryNode): boolean => node.attrs.offline === '1'
+// Replayed status stanzas carry numeric offline markers, including '0'.
+export const isOfflineNode = (node: BinaryNode): boolean =>
+	node.tag === 'status' ? node.attrs.offline !== undefined : node.attrs.offline === '1'
 
 type OfflineNode = {
 	type: MessageType

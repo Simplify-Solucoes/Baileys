@@ -2340,6 +2340,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const offlineNodeProcessor = makeOfflineNodeProcessor(
 		new Map<MessageType, (node: BinaryNode) => Promise<void>>([
 			['message', node => socketTaskGuard.run(() => handleMessage(node))],
+			['status', node => socketTaskGuard.run(() => sendMessageAck(node))],
 			['call', node => socketTaskGuard.run(() => handleCall(node))],
 			['receipt', node => socketTaskGuard.run(() => handleReceipt(node))],
 			['notification', node => socketTaskGuard.run(() => handleNotification(node))]
@@ -2425,6 +2426,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// recv a message
 	ws.on('CB:message', async (node: BinaryNode) => {
 		await processNode('message', node, 'processing message', handleMessage)
+	})
+
+	ws.on('CB:status', async (status: BinaryNode) => {
+		await processNode('status', status, 'acknowledging status', node => sendMessageAck(node))
 	})
 
 	ws.on('CB:call', async (node: BinaryNode) => {
